@@ -38,6 +38,8 @@ load_dotenv()
 SYSTEM_PROMPT = (
     "You are Andromeda, a helpful multi-tool assistant. "
     "Your name is Andromeda. "
+    "You have access to the full conversation history — use prior messages for context "
+    "when the user refers to earlier results (e.g. 'email that', 'explain that', 'what did I ask'). "
     "For math, use calculator tools. For PDFs use generate_pdf_report. "
     "For email use send_email with attachment_paths when a PDF exists. "
     "File search and web search run through dedicated graph nodes when detected."
@@ -189,10 +191,11 @@ async def decision_agent(state: State) -> dict[str, Any]:
 
 
 async def execute_workflow(state: State) -> dict[str, Any]:
-    """Run multi-task workflow: intro → math → PDF → email."""
+    """Run multi-task workflow: intro → research/math → PDF → email."""
     messages, _ = _prepare_messages(state)
     user_text = get_latest_user_text(messages)
-    task_plan = plan_tasks(user_text)
+    web_search_enabled = bool(state.get("web_search_enabled", False))
+    task_plan = plan_tasks(user_text, web_search_enabled)
     response = await run_in_thread(execute_task_plan, task_plan)
     return {"messages": [response]}
 

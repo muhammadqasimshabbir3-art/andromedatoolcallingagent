@@ -13,7 +13,14 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Spacer, Table, TableStyle, Paragraph
+from reportlab.platypus import (
+    HRFlowable,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+    Paragraph,
+)
 
 from agent.async_utils import run_in_thread
 
@@ -148,6 +155,190 @@ def _generate_pdf_report_sync(
         return f"Error generating PDF report: {str(e)}"
 
 
+MEDICAL_THEME = {
+    "title": "#1a5276",
+    "subtitle": "#117a65",
+    "section_header_bg": "#1a5276",
+    "section_header_text": "#ffffff",
+    "body": "#2c3e50",
+    "accent_line": "#27ae60",
+    "footer": "#95a5a6",
+    "intro_bg": "#eafaf1",
+    "causes_bg": "#fdedec",
+    "prevention_bg": "#eafaf1",
+    "treatment_bg": "#ebf5fb",
+}
+
+
+def _generate_stylized_topic_pdf_sync(
+    topic: str,
+    sections: dict[str, str],
+    output_path: str,
+    subtitle: str = "",
+    intro_text: str = "",
+) -> str:
+    """Generate a color-themed PDF report with structured sections."""
+    try:
+        output_dir = Path(output_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        theme = MEDICAL_THEME
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=letter,
+            rightMargin=0.65 * inch,
+            leftMargin=0.65 * inch,
+            topMargin=0.65 * inch,
+            bottomMargin=0.65 * inch,
+        )
+        styles = getSampleStyleSheet()
+
+        title_style = ParagraphStyle(
+            "TopicTitle",
+            parent=styles["Heading1"],
+            fontSize=26,
+            textColor=colors.HexColor(theme["title"]),
+            spaceAfter=8,
+            alignment=1,
+            fontName="Helvetica-Bold",
+        )
+        subtitle_style = ParagraphStyle(
+            "TopicSubtitle",
+            parent=styles["Heading2"],
+            fontSize=13,
+            textColor=colors.HexColor(theme["subtitle"]),
+            spaceAfter=16,
+            alignment=1,
+        )
+        section_title_style = ParagraphStyle(
+            "SectionTitle",
+            parent=styles["Heading2"],
+            fontSize=14,
+            textColor=colors.HexColor(theme["section_header_text"]),
+            spaceAfter=8,
+            spaceBefore=4,
+            fontName="Helvetica-Bold",
+        )
+        body_style = ParagraphStyle(
+            "TopicBody",
+            parent=styles["BodyText"],
+            fontSize=11,
+            leading=15,
+            textColor=colors.HexColor(theme["body"]),
+            spaceAfter=10,
+        )
+        intro_style = ParagraphStyle(
+            "IntroBody",
+            parent=body_style,
+            backColor=colors.HexColor(theme["intro_bg"]),
+            borderPadding=8,
+        )
+
+        story: list = []
+        story.append(Paragraph(topic, title_style))
+        story.append(
+            Paragraph(
+                subtitle or f"Comprehensive Health Report — {topic}",
+                subtitle_style,
+            )
+        )
+        story.append(
+            Paragraph(
+                f"Generated on {datetime.now().strftime('%B %d, %Y at %H:%M')}",
+                ParagraphStyle(
+                    "Date",
+                    parent=styles["Normal"],
+                    fontSize=9,
+                    textColor=colors.HexColor(theme["footer"]),
+                    alignment=1,
+                ),
+            )
+        )
+        story.append(Spacer(1, 0.15 * inch))
+        story.append(HRFlowable(width="100%", thickness=2, color=colors.HexColor(theme["accent_line"])))
+        story.append(Spacer(1, 0.2 * inch))
+
+        if intro_text:
+            story.append(Paragraph("From Andromeda Assistant", section_title_style))
+            story.append(Paragraph(intro_text.replace("**", ""), intro_style))
+            story.append(Spacer(1, 0.15 * inch))
+
+        section_colors = {
+            "Introduction": theme["intro_bg"],
+            "Overview": theme["intro_bg"],
+            "Causes": theme["causes_bg"],
+            "Prevention": theme["prevention_bg"],
+            "Treatment & Cure": theme["treatment_bg"],
+            "Treatment": theme["treatment_bg"],
+            "Design Notes": "#f4f6f7",
+        }
+
+        for section_name, section_body in sections.items():
+            if not section_body or not section_body.strip():
+                continue
+            bg = section_colors.get(section_name, "#ffffff")
+            header_table = Table(
+                [[Paragraph(section_name, section_title_style)]],
+                colWidths=[7.2 * inch],
+            )
+            header_table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(theme["section_header_bg"])),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                        ("TOPPADDING", (0, 0), (-1, -1), 6),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ]
+                )
+            )
+            story.append(header_table)
+            story.append(Spacer(1, 0.08 * inch))
+
+            for paragraph in section_body.split("\n\n"):
+                text = paragraph.strip()
+                if not text:
+                    continue
+                para = Paragraph(text.replace("\n", "<br/>"), body_style)
+                content_table = Table([[para]], colWidths=[7.2 * inch])
+                content_table.setStyle(
+                    TableStyle(
+                        [
+                            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(bg)),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                            ("TOPPADDING", (0, 0), (-1, -1), 8),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#d5d8dc")),
+                        ]
+                    )
+                )
+                story.append(content_table)
+            story.append(Spacer(1, 0.15 * inch))
+
+        story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor(theme["footer"])))
+        story.append(Spacer(1, 0.1 * inch))
+        story.append(
+            Paragraph(
+                "Generated by Andromeda Agent — Research PDF Workflow",
+                ParagraphStyle(
+                    "Footer",
+                    parent=styles["Normal"],
+                    fontSize=9,
+                    textColor=colors.HexColor(theme["footer"]),
+                    alignment=1,
+                ),
+            )
+        )
+
+        doc.build(story)
+        file_size = os.path.getsize(output_path)
+        return f"PDF report successfully generated: {output_path} ({file_size} bytes)"
+
+    except Exception as exc:
+        return f"Error generating stylized PDF report: {exc}"
+
+
 @tool
 async def generate_pdf_report(
     title: str,
@@ -249,6 +440,11 @@ async def generate_table_report(
     )
 
 
-__all__ = ["generate_pdf_report", "generate_table_report"]
+__all__ = [
+    "generate_pdf_report",
+    "generate_table_report",
+    "_generate_stylized_topic_pdf_sync",
+    "_generate_pdf_report_sync",
+]
 
 

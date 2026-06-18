@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from agent.custom_tools.calculator_tools import extract_math_expressions
+from agent.report_planning import extract_report_topic, infer_report_aspects
 from agent.routing import is_math_query, wants_email
 
 INTRO_KEYWORDS = (
@@ -18,12 +19,32 @@ INTRO_KEYWORDS = (
 
 PDF_KEYWORDS = (
     "pdf",
+    "pdf file",
     "report file",
     "save these",
     "save the",
     "create a report",
+    "create a pdf",
+    "create pdf",
     "generate a report",
+    "generate a pdf",
     "stylized",
+    "stylized pdf",
+)
+
+EXPLICIT_WEB_IN_REPORT = (
+    "search internet",
+    "search the internet",
+    "search the web",
+    "search online",
+    "you can search",
+    "look up online",
+    "find on the internet",
+    "search for information",
+    "search for design",
+    "search for colours",
+    "search for colors",
+    "search for formatting",
 )
 
 WEB_SEARCH_KEYWORDS = (
@@ -72,6 +93,10 @@ class TaskPlan:
     tasks: list[str] = field(default_factory=list)
     math_expressions: list[str] = field(default_factory=list)
     user_text: str = ""
+    report_topic: str = ""
+    report_aspects: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = field(
+        default_factory=list
+    )
     web_search_enabled: bool = False
     use_web_search: bool = False
     use_file_search: bool = False
@@ -87,6 +112,7 @@ class TaskPlan:
         labels = {
             "introduce": "Introduce myself",
             "calculate_math": f"Calculate {len(self.math_expressions)} expression(s)",
+            "research_web": f"Research {self.report_topic or 'topic'} online (+ PDF design)",
             "create_pdf": "Create stylized PDF report",
             "send_email": "Email results with PDF attachment",
             "web_search": f"Web search: {self.search_query or 'query'}",
@@ -103,6 +129,27 @@ class TaskPlan:
 def wants_introduction(text: str) -> bool:
     lowered = text.lower()
     return any(keyword in lowered for keyword in INTRO_KEYWORDS)
+
+
+def is_research_report_workflow(user_text: str, math_expressions: list[str]) -> bool:
+    """PDF report workflow driven by research, not calculator results."""
+    return wants_pdf(user_text) and not math_expressions
+
+
+def wants_web_research_for_report(user_text: str, web_search_enabled: bool) -> bool:
+    """Research online when the user wants an informational PDF (any topic)."""
+    math_expressions = extract_math_expressions(user_text)
+    if not is_research_report_workflow(user_text, math_expressions):
+        return False
+
+    lowered = user_text.lower()
+    if any(phrase in lowered for phrase in EXPLICIT_WEB_IN_REPORT):
+        return True
+    if web_search_enabled:
+        return True
+
+    # Informational report with a identifiable topic — planner adds research step
+    return extract_report_topic(user_text) != "General Report"
 
 
 def wants_pdf(text: str) -> bool:
@@ -206,6 +253,13 @@ def plan_tasks(user_text: str, web_search_enabled: bool = False) -> TaskPlan:
     if math_expressions:
         plan.tasks.append("calculate_math")
         plan.math_expressions = math_expressions
+
+    plan.report_topic = extract_report_topic(user_text)
+    plan.report_aspects = infer_report_aspects(user_text)
+
+    if wants_web_research_for_report(user_text, web_search_enabled):
+        plan.tasks.append("research_web")
+        plan.use_web_search = True
 
     if wants_pdf(user_text):
         plan.tasks.append("create_pdf")

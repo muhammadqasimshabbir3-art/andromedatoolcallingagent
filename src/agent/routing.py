@@ -20,6 +20,8 @@ EMAIL_KEYWORDS = (
     "mail me",
     "send me",
     "send to",
+    "send this",
+    "via email",
     "send on email",
     "send via email",
     "share via email",
