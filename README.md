@@ -289,7 +289,6 @@ call_model, tools
 
 ## Publish to GitHub
 
-Suggested repository name: **`andromeda-agent`**
 
 ```bash
 git init
