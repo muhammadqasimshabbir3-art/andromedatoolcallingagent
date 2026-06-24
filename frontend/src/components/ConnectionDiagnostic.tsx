@@ -50,7 +50,7 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
       } catch (e) {
         update(1, {
           status: "fail",
-          detail: `Network/CORS error: ${String(e)}. Set LANGGRAPH_ALLOWED_ORIGINS on Railway.`,
+          detail: `Network/CORS error: ${String(e)}. Set CORS_ALLOW_ORIGINS on Railway.`,
         });
         return;
       }
@@ -112,7 +112,7 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
       </div>
       <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "8px", padding: "8px", background: "var(--bg-secondary)", borderRadius: "6px" }}>
         <AlertTriangle size={12} style={{ display: "inline", marginRight: "4px" }} />
-        If step 2 fails with CORS: add <code>LANGGRAPH_ALLOWED_ORIGINS=https://andromedatoolcallingagentui.vercel.app</code> to Railway env vars.
+        If step 2 fails with CORS: add <code>CORS_ALLOW_ORIGINS=https://andromedatoolcallingagentui.vercel.app</code> to Railway env vars.
       </div>
     </section>
   );
