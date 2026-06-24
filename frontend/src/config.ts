@@ -4,11 +4,11 @@
  * Local dev (root .env via Vite envDir):
  *   VITE_LANGGRAPH_API_URL=http://127.0.0.1:2024
  *
- * Vercel production — set in Project → Environment Variables:
- *   VITE_LANGGRAPH_API_URL=https://andromeda-tool-calling-agent-production.up.railway.app
- *   VITE_LANGSMITH_API_KEY=<your langsmith key>   (only needed if server requires auth)
+ * Vercel production — vercel.json proxies /api → Railway (no CORS needed):
+ *   VITE_LANGGRAPH_API_URL=/api   (or leave unset; defaults to /api)
+ *   VITE_LANGSMITH_API_KEY=<your langsmith key>   (only if server requires auth)
  *
- * Leave VITE_LANGGRAPH_API_URL empty locally to use Vite proxy /api → LANGGRAPH_PORT
+ * Local dev — leave VITE_LANGGRAPH_API_URL empty to use Vite proxy /api → LANGGRAPH_PORT
  */
 function readApiUrl(): string {
   const candidates = [
