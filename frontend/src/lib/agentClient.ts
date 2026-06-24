@@ -14,19 +14,22 @@ function getClient(): Client {
 /** Check if the LangGraph server is reachable. */
 export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: number }> {
   const start = performance.now();
+  const elapsed = () => Math.round(performance.now() - start);
+
+  // Prefer /ok — fast, no auth, matches LangGraph health endpoint
   try {
-    // The SDK's assistants.search is a lightweight authenticated call
+    const res = await fetch(`${LANGGRAPH_API_URL}/ok`, { method: "GET" });
+    if (res.ok) return { ok: true, latencyMs: elapsed() };
+  } catch {
+    // fall through to SDK check
+  }
+
+  try {
     const client = getClient();
     await client.assistants.search({ limit: 1 });
-    return { ok: true, latencyMs: Math.round(performance.now() - start) };
+    return { ok: true, latencyMs: elapsed() };
   } catch {
-    // Fallback: plain /ok ping (works for unauthenticated deployments)
-    try {
-      const res = await fetch(`${LANGGRAPH_API_URL}/ok`);
-      return { ok: res.ok, latencyMs: Math.round(performance.now() - start) };
-    } catch {
-      return { ok: false, latencyMs: 0 };
-    }
+    return { ok: false, latencyMs: 0 };
   }
 }
 
