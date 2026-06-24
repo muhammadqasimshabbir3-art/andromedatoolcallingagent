@@ -32,3 +32,9 @@ export const LANGSMITH_API_KEY =
   import.meta.env.VITE_LANGSMITH_API_KEY?.trim() || "";
 
 export const GRAPH_RUN_CONFIG = { recursion_limit: 100 };
+
+/** True when running the Vite production bundle (e.g. on Vercel). */
+export const IS_PRODUCTION = import.meta.env.PROD;
+
+/** True when the UI falls back to the local dev proxy instead of a direct API URL. */
+export const USES_DEV_PROXY = LANGGRAPH_API_URL === "/api";

@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { Loader2, RefreshCw, Server, Wifi, WifiOff } from "lucide-react";
+import { ConnectionDiagnostic } from "./ConnectionDiagnostic";
 import type { ServerStatus } from "../hooks/useServerHealth";
 
 interface ConnectionPanelProps {
@@ -20,6 +22,8 @@ export function ConnectionPanel({
   runId,
   onRefresh,
 }: ConnectionPanelProps) {
+  const [diagRun, setDiagRun] = useState(false);
+
   return (
     <aside className="panel connection-panel">
       <div className="panel-title">
@@ -64,13 +68,25 @@ export function ConnectionPanel({
         )}
       </div>
 
-      <div className="deploy-note">
-        <strong>Deployment</strong>
-        <p>
-          Backend runs on LangGraph Server. Point this UI at it with{" "}
-          <code>VITE_LANGGRAPH_API_URL</code> when hosting the frontend separately.
-        </p>
-      </div>
+      {status === "offline" && (
+        <div className="deploy-note">
+          <strong>Connection help</strong>
+          <p>
+            The UI could not reach the LangGraph API. Run a diagnostic to see whether env vars,
+            network, or CORS is blocking the request.
+          </p>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => setDiagRun(true)}
+            disabled={diagRun}
+          >
+            Run connection diagnostic
+          </button>
+        </div>
+      )}
+
+      <ConnectionDiagnostic run={diagRun} />
     </aside>
   );
 }

@@ -1,3 +1,4 @@
+import { IS_PRODUCTION, LANGGRAPH_API_URL, USES_DEV_PROXY } from "../config";
 import type { AgentRunSettings } from "../types";
 
 interface AgentConfigFormProps {
@@ -104,7 +105,16 @@ export function RunControls({ running, serverOnline, onStart, onStop }: RunContr
       </div>
       {!serverOnline && (
         <p className="hint warn">
-          Start the LangGraph server first: <code>./start.sh both</code>
+          {IS_PRODUCTION || !USES_DEV_PROXY ? (
+            <>
+              LangGraph backend is unreachable at <code>{LANGGRAPH_API_URL}</code>. Check the Railway
+              deployment, then refresh the connection panel.
+            </>
+          ) : (
+            <>
+              Start the LangGraph server first: <code>./start.sh both</code>
+            </>
+          )}
         </p>
       )}
       {running && (
