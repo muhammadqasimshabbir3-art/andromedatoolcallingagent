@@ -20,9 +20,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
-        "https://*.vercel.app",  # Allow Vercel preview deployments
-        # Note: Add your specific production Vercel domain below
-        # "https://your-frontend-app.vercel.app"
+        "http://localhost:5173",
+        "https://andromedatoolcallingagentui.vercel.app",
+        os.environ.get("FRONTEND_URL", "https://andromedatoolcallingagentui.vercel.app")
     ],
     allow_credentials=True,
     allow_methods=["*"],
