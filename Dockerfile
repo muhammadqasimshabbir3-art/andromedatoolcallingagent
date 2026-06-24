@@ -12,8 +12,9 @@ WORKDIR /app
 # Install uv for fast dependency resolution
 RUN pip install uv
 
-# Copy project configuration files
-COPY pyproject.toml .
+# Copy project configuration files and source directory
+COPY pyproject.toml README.md uv.lock ./
+COPY src/ ./src/
 
 # Install dependencies using uv
 # We copy pyproject.toml and use it to install the environment
