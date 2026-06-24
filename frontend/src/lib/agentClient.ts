@@ -2,10 +2,18 @@ import { Client } from "@langchain/langgraph-sdk";
 import { ASSISTANT_ID, LANGSMITH_API_KEY, LANGGRAPH_API_URL, GRAPH_RUN_CONFIG } from "../config";
 import type { RunRequest } from "../types";
 
+function resolveApiUrlForSdk(apiUrl: string): string {
+  // LangGraph SDK expects an absolute URL. In local/dev-proxy mode we may have "/api".
+  if (apiUrl.startsWith("/")) {
+    return new URL(apiUrl, window.location.origin).toString();
+  }
+  return apiUrl;
+}
+
 /** Shared SDK client — re-used across calls. */
 function getClient(): Client {
   return new Client({
-    apiUrl: LANGGRAPH_API_URL,
+    apiUrl: resolveApiUrlForSdk(LANGGRAPH_API_URL),
     // apiKey is sent as x-api-key; omit if empty so open deployments work too
     ...(LANGSMITH_API_KEY ? { apiKey: LANGSMITH_API_KEY } : {}),
   });
