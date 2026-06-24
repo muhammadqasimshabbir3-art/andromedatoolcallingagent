@@ -1,33 +1,26 @@
-# Use Python 3.12 slim image
-FROM python:3.12-slim
+FROM langchain/langgraph-api:3.12
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PORT=8000
 
-# Set working directory
-WORKDIR /app
 
-# Install uv for fast dependency resolution
-RUN pip install uv
+# -- Adding local package . --
+ADD . /deps/Andromeda-Tool-Calling-Agent-
+# -- End of local package . --
 
-# Copy project configuration files and source directory
-COPY pyproject.toml README.md uv.lock ./
-COPY src/ ./src/
+# -- Installing all local dependencies --
+RUN for dep in /deps/*; do             echo "Installing $dep";             if [ -d "$dep" ]; then                 echo "Installing $dep";                 (cd "$dep" && PYTHONDONTWRITEBYTECODE=1 uv pip install --system --no-cache-dir -c /api/constraints.txt -e .);             fi;         done
+# -- End of local dependencies install --
+ENV LANGSERVE_GRAPHS='{"agent": "/deps/Andromeda-Tool-Calling-Agent-/src/agent/graph.py:graph"}'
 
-# Install dependencies using uv
-# We copy pyproject.toml and use it to install the environment
-RUN uv pip install --system -e .
 
-# Copy application source code
-COPY . .
 
-# Ensure storage/temp directories exist for uploads/PDF generation
-RUN mkdir -p /tmp/reports
+# -- Ensure user deps didn't inadvertently overwrite langgraph-api
+RUN mkdir -p /api/langgraph_api /api/langgraph_runtime /api/langgraph_license && touch /api/langgraph_api/__init__.py /api/langgraph_runtime/__init__.py /api/langgraph_license/__init__.py
+RUN PYTHONDONTWRITEBYTECODE=1 uv pip install --system --no-cache-dir --no-deps -e /api
+# -- End of ensuring user deps didn't inadvertently overwrite langgraph-api --
+# -- Removing build deps from the final image ~<:===~~~ --
+RUN pip uninstall -y pip setuptools wheel
+RUN rm -rf /usr/local/lib/python*/site-packages/pip* /usr/local/lib/python*/site-packages/setuptools* /usr/local/lib/python*/site-packages/wheel* && find /usr/local/bin -name "pip*" -delete || true
+RUN rm -rf /usr/lib/python*/site-packages/pip* /usr/lib/python*/site-packages/setuptools* /usr/lib/python*/site-packages/wheel* && find /usr/bin -name "pip*" -delete || true
+RUN uv pip uninstall --system pip setuptools wheel && rm /usr/bin/uv /usr/bin/uvx
 
-# Expose the Railway provided port
-EXPOSE ${PORT}
-
-# Run the FastAPI server
-CMD ["python", "server.py"]
+WORKDIR /deps/Andromeda-Tool-Calling-Agent-
