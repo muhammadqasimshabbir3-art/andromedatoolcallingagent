@@ -28,10 +28,24 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
   const start = performance.now();
   const elapsed = () => Math.round(performance.now() - start);
 
-  // Prefer /ok — fast, no auth, matches LangGraph health endpoint
+  // Prefer /ok — fast, no auth, matches LangGraph health endpoint.
+  // However a static frontend can return index.html at /api/ok (HTTP 200 HTML),
+  // which would incorrectly indicate the backend is healthy. We require a
+  // JSON response with { ok: true } to consider the health check successful.
   try {
     const res = await fetch(healthCheckUrl(), { method: "GET" });
-    if (res.ok) return { ok: true, latencyMs: elapsed() };
+    if (res.ok) {
+      try {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const body = await res.json();
+          if (body && body.ok === true) return { ok: true, latencyMs: elapsed() };
+        }
+        // Otherwise treat as not a real health response and fall through.
+      } catch {
+        // JSON parse failed - likely HTML index page. Fall through to SDK check.
+      }
+    }
   } catch {
     // fall through to SDK check
   }

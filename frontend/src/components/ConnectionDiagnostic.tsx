@@ -43,7 +43,31 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
       try {
         const res = await fetch(healthCheckUrl(), { method: "GET" });
         if (res.ok) {
-          update(1, { status: "ok", detail: `HTTP ${res.status}` });
+          // Prefer JSON { ok: true } — static index.html responses are HTML and
+          // indicate the frontend is serving the route instead of the API.
+          const ct = res.headers.get("content-type") || "";
+          if (ct.includes("application/json")) {
+            try {
+              const body = await res.json();
+              if (body && body.ok === true) {
+                update(1, { status: "ok", detail: `HTTP ${res.status}` });
+              } else {
+                update(1, { status: "fail", detail: `Unexpected /ok body — expected {ok:true}` });
+                return;
+              }
+            } catch (e) {
+              update(1, { status: "fail", detail: `Invalid JSON from /ok: ${String(e)}` });
+              return;
+            }
+          } else {
+            // Likely index.html — helpful guidance to the user
+            update(1, {
+              status: "fail",
+              detail:
+                "GET /ok returned HTML (index page). This means the frontend is serving /api — either add a Vercel rewrite to proxy /api → Railway or set VITE_LANGGRAPH_API_URL to the Railway URL.",
+            });
+            return;
+          }
         } else {
           update(1, { status: "fail", detail: `HTTP ${res.status} — server reachable but returned error` });
           return;
