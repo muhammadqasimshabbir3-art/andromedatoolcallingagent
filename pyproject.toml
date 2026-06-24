@@ -21,9 +21,6 @@ dependencies = [
     "sympy>=1.12",
     "streamlit>=1.28.0",
     "ddgs>=9.0.0",
-    "fastapi>=0.109.0",
-    "uvicorn>=0.27.0",
-    "python-multipart>=0.0.7",
 ]
 
 
