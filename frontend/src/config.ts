@@ -5,16 +5,15 @@
  *   VITE_LANGGRAPH_API_URL=http://127.0.0.1:2024
  *
  * Vercel production — set in Project → Environment Variables:
- *   VITE_LANGGRAPH_API_URL=https://<your-railway-app>.up.railway.app
- *   (aliases: VITE_API_URL, NEXT_PUBLIC_API_URL)
+ *   VITE_LANGGRAPH_API_URL=https://andromeda-tool-calling-agent-production.up.railway.app
+ *   VITE_LANGSMITH_API_KEY=<your langsmith key>   (only needed if server requires auth)
  *
- * Leave empty locally to use Vite proxy /api → LANGGRAPH_PORT
+ * Leave VITE_LANGGRAPH_API_URL empty locally to use Vite proxy /api → LANGGRAPH_PORT
  */
 function readApiUrl(): string {
   const candidates = [
     import.meta.env.VITE_LANGGRAPH_API_URL,
     import.meta.env.VITE_API_URL,
-    import.meta.env.NEXT_PUBLIC_API_URL,
   ];
   for (const value of candidates) {
     const trimmed = value?.trim();
@@ -28,7 +27,8 @@ export const LANGGRAPH_API_URL = readApiUrl() || "/api";
 export const ASSISTANT_ID =
   import.meta.env.VITE_LANGGRAPH_ASSISTANT_ID?.trim() || "agent";
 
-export const UI_URL =
-  import.meta.env.VITE_UI_URL?.trim() || "http://localhost:5173";
+/** Optional LangSmith / LangGraph Cloud API key for authenticated deployments. */
+export const LANGSMITH_API_KEY =
+  import.meta.env.VITE_LANGSMITH_API_KEY?.trim() || "";
 
 export const GRAPH_RUN_CONFIG = { recursion_limit: 100 };

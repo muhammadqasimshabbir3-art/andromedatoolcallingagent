@@ -1,11 +1,27 @@
-import { ASSISTANT_ID, LANGGRAPH_API_URL, GRAPH_RUN_CONFIG } from "../config";
+import { ASSISTANT_ID, LANGSMITH_API_KEY, LANGGRAPH_API_URL, GRAPH_RUN_CONFIG } from "../config";
 import type { RunRequest } from "../types";
+
+/** Build common headers for every LangGraph API request. */
+function buildHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extra,
+  };
+  // LangGraph Cloud / hosted deployments require the LangSmith API key
+  if (LANGSMITH_API_KEY) {
+    headers["x-api-key"] = LANGSMITH_API_KEY;
+  }
+  return headers;
+}
 
 /** Check if the LangGraph server is reachable at /ok */
 export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: number }> {
   const start = performance.now();
   try {
-    const res = await fetch(`${LANGGRAPH_API_URL}/ok`, { method: "GET" });
+    const res = await fetch(`${LANGGRAPH_API_URL}/ok`, {
+      method: "GET",
+      headers: buildHeaders(),
+    });
     return { ok: res.ok, latencyMs: Math.round(performance.now() - start) };
   } catch {
     return { ok: false, latencyMs: 0 };
@@ -16,11 +32,12 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
 export async function createThread(): Promise<string> {
   const res = await fetch(`${LANGGRAPH_API_URL}/threads`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: buildHeaders(),
     body: JSON.stringify({}),
   });
   if (!res.ok) {
-    throw new Error(`Failed to create thread: ${res.status} ${res.statusText}`);
+    const text = await res.text().catch(() => res.statusText);
+    throw new Error(`Failed to create thread (${res.status}): ${text}`);
   }
   const data = await res.json() as { thread_id: string };
   return data.thread_id;
@@ -46,11 +63,21 @@ export async function runAgentOnThread(
     stream_mode: ["updates", "values"],
   };
 
-  const res = await fetch(`${LANGGRAPH_API_URL}/threads/${threadId}/runs/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${LANGGRAPH_API_URL}/threads/${threadId}/runs/stream`, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    });
+  } catch (networkErr) {
+    // Typically a CORS or network error — give a clear message
+    throw new Error(
+      `Cannot reach the backend at "${LANGGRAPH_API_URL}". ` +
+      `Check that LANGGRAPH_ALLOWED_ORIGINS is set on Railway and the service is running. ` +
+      `(${String(networkErr)})`
+    );
+  }
 
   if (!res.ok) {
     let detail = `Agent run failed (${res.status})`;
@@ -89,24 +116,20 @@ export async function runAgentOnThread(
           const parsed = JSON.parse(rawData) as unknown;
           onChunk?.(eventType, parsed);
           // Pull the latest messages array from "values" events
-          if (
-            eventType === "values" &&
-            parsed &&
-            typeof parsed === "object"
-          ) {
+          if (eventType === "values" && parsed && typeof parsed === "object") {
             const vals = parsed as Record<string, unknown>;
             if (Array.isArray(vals.messages)) {
               lastMessages = vals.messages as Array<{ content?: string; type?: string }>;
             }
           }
-        } catch { /* non-JSON SSE data, skip */ }
+        } catch { /* non-JSON SSE line, skip */ }
       }
     }
   }
 
   // Extract the last AI message content
   const lastAI = [...lastMessages].reverse().find(
-    (m) => m.type === "ai" || m.type === "AIMessage"
+    (m) => m.type === "ai" || m.type === "AIMessage",
   );
   return (lastAI?.content as string | undefined) ?? "Agent completed.";
 }
