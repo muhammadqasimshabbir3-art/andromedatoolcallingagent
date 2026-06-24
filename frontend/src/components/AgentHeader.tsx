@@ -1,11 +1,11 @@
 import {
   Activity,
   Bot,
+  Cpu,
   Mail,
   Play,
   Radio,
   Sparkles,
-  Youtube,
 } from "lucide-react";
 import type { ServerStatus } from "../hooks/useServerHealth";
 
@@ -21,11 +21,11 @@ export function AgentHeader({ serverStatus, latencyMs, apiUrl, running }: AgentH
     <header className="agent-header">
       <div className="brand">
         <div className="brand-icon">
-          <Youtube size={22} />
+          <Cpu size={22} />
         </div>
         <div>
-          <h1>YouTube Community Manager Agent</h1>
-          <p>LangGraph pipeline · scrape, analyze, reply, report</p>
+          <h1>Andromeda Agent</h1>
+          <p>LangGraph pipeline · multi-tool AI orchestration</p>
         </div>
       </div>
 
@@ -50,9 +50,9 @@ export function AgentHeader({ serverStatus, latencyMs, apiUrl, running }: AgentH
       </div>
 
       <div className="header-badges">
-        <span className="badge"><Sparkles size={12} /> Humorous replies</span>
-        <span className="badge"><Play size={12} /> Playwright browser</span>
-        <span className="badge"><Mail size={12} /> HTML + PDF reports</span>
+        <span className="badge"><Sparkles size={12} /> Multi-step reasoning</span>
+        <span className="badge"><Play size={12} /> Tool orchestration</span>
+        <span className="badge"><Mail size={12} /> PDF &amp; email reports</span>
       </div>
     </header>
   );

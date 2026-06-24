@@ -1,7 +1,7 @@
 /** Persist active LangGraph run so a browser refresh can reconnect. */
 import type { AgentState, StepState } from "../types";
 
-const STORAGE_KEY = "yt-agent-run-session";
+const STORAGE_KEY = "andromeda-run-session";
 
 export interface RunSession {
   threadId: string;

@@ -10,7 +10,6 @@ export function useAgentRun() {
   const [result, setResult] = useState<AgentState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  
   const [threadId, setThreadId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
 
@@ -37,32 +36,48 @@ export function useAgentRun() {
     setResult(null);
     setLogs([]);
     setReconnected(false);
-    
+    setThreadId(null);
+    setRunId(null);
+
     // Mark first step as running
-    setSteps((prev) => 
+    setSteps((prev) =>
       prev.map((s, i) => i === 0 ? { ...s, status: "running" } : { ...s, status: "pending" })
     );
 
     pushLog("info", "🚀 Sending request to Andromeda agent...");
 
     try {
-      const responseText = await runAgentChat(request);
-      
-      // Update result state with the text returned
-      setResult({ task_plan_summary: responseText } as AgentState);
-      
-      // Mark all steps completed (since it's a single synchronous call now)
-      setSteps((prev) => 
-        prev.map(s => ({ ...s, status: "completed", detail: "Done" }))
+      const { threadId: tid, response } = await runAgentChat(
+        request,
+        (eventType, data) => {
+          // Live progress from SSE stream
+          if (eventType === "updates" && data && typeof data === "object") {
+            const upd = data as Record<string, unknown>;
+            const nodeName = Object.keys(upd)[0];
+            if (nodeName) {
+              pushLog("info", `⚙️ Node active: ${nodeName}`);
+            }
+          }
+        },
       );
-      
+
+      setThreadId(tid);
+
+      // Update result state with the text returned
+      setResult({ task_plan_summary: response } as AgentState);
+
+      // Mark all steps completed
+      setSteps((prev) =>
+        prev.map((s) => ({ ...s, status: "completed", detail: "Done" }))
+      );
+
       pushLog("success", "✅ Agent request completed successfully!");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setError(message);
       pushLog("error", `❌ Error: ${message}`);
-      
-      setSteps((prev) => 
+
+      setSteps((prev) =>
         prev.map((s) => s.status === "running" ? { ...s, status: "error", detail: message } : s)
       );
     } finally {
@@ -71,8 +86,6 @@ export function useAgentRun() {
   }, [pushLog]);
 
   const cancel = useCallback(() => {
-    // Cannot easily cancel a standard fetch in this minimal setup, 
-    // but we can update the UI state.
     if (running) {
       setRunning(false);
       pushLog("warn", "⏹️ Agent run stopped (UI only)");
