@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, XCircle } from "lucide-react";
 import { ASSISTANT_ID, LANGSMITH_API_KEY, LANGGRAPH_API_URL } from "../config";
+import { healthCheckUrl } from "../lib/agentClient";
 
 interface DiagStep {
   label: string;
@@ -12,7 +13,7 @@ interface DiagStep {
 export function ConnectionDiagnostic({ run }: { run: boolean }) {
   const [steps, setSteps] = useState<DiagStep[]>([
     { label: "Env vars set", status: "pending" },
-    { label: `GET ${LANGGRAPH_API_URL}/ok`, status: "pending" },
+    { label: `GET ${healthCheckUrl()}`, status: "pending" },
     { label: "POST /threads (auth check)", status: "pending" },
   ]);
 
@@ -40,7 +41,7 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
       // Step 1 — plain /ok ping
       update(1, { status: "running" });
       try {
-        const res = await fetch(`${LANGGRAPH_API_URL}/ok`, { method: "GET" });
+        const res = await fetch(healthCheckUrl(), { method: "GET" });
         if (res.ok) {
           update(1, { status: "ok", detail: `HTTP ${res.status}` });
         } else {

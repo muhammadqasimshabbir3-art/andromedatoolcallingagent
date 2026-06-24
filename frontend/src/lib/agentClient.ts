@@ -5,9 +5,13 @@ import type { RunRequest } from "../types";
 function resolveApiUrlForSdk(apiUrl: string): string {
   // LangGraph SDK expects an absolute URL. In local/dev-proxy mode we may have "/api".
   if (apiUrl.startsWith("/")) {
-    return new URL(apiUrl, window.location.origin).toString();
+    return new URL(apiUrl, window.location.origin).toString().replace(/\/$/, "");
   }
-  return apiUrl;
+  return apiUrl.replace(/\/$/, "");
+}
+
+export function healthCheckUrl(): string {
+  return `${resolveApiUrlForSdk(LANGGRAPH_API_URL)}/ok`;
 }
 
 /** Shared SDK client — re-used across calls. */
@@ -26,7 +30,7 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
 
   // Prefer /ok — fast, no auth, matches LangGraph health endpoint
   try {
-    const res = await fetch(`${LANGGRAPH_API_URL}/ok`, { method: "GET" });
+    const res = await fetch(healthCheckUrl(), { method: "GET" });
     if (res.ok) return { ok: true, latencyMs: elapsed() };
   } catch {
     // fall through to SDK check
