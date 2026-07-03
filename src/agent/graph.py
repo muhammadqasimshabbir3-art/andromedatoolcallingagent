@@ -18,16 +18,21 @@ from agent.custom_tools.calculator_tools import (
     casio_calculator,
     solve_math_batch_tool,
 )
-from agent.custom_tools.email_tools import send_email
+from agent.custom_tools.gmail_inbox_tools import (
+    process_gmail_inbox,
+    read_unread_gmail,
+    reply_to_gmail_message,
+)
 from agent.custom_tools.pdf_generator import generate_pdf_report, generate_table_report
 from agent.routing import (
-    email_fallback_response,
     file_search_response,
     get_latest_user_text,
+    gmail_inbox_fallback_response,
     is_empty_ai_message,
     is_math_query,
     math_fallback_response,
     wants_email,
+    wants_gmail_inbox_reply,
     web_search_response,
 )
 from agent.task_planner import needs_file_search, plan_tasks, should_use_web_search
@@ -36,12 +41,13 @@ from agent.workflow_executor import execute_task_plan
 load_dotenv()
 
 SYSTEM_PROMPT = (
-    "You are Andromeda, a helpful multi-tool assistant. "
-    "Your name is Andromeda. "
+    "You are Solar, a helpful multi-tool assistant. "
+    "Your name is Solar. "
     "You have access to the full conversation history — use prior messages for context "
     "when the user refers to earlier results (e.g. 'email that', 'explain that', 'what did I ask'). "
     "For math, use calculator tools. For PDFs use generate_pdf_report. "
-    "For email use send_email with attachment_paths when a PDF exists. "
+    "Use Gmail API tools only (no SMTP). "
+    "You can read unread Gmail emails, summarize contents, and reply in-thread. "
     "File search and web search run through dedicated graph nodes when detected."
 )
 
@@ -51,6 +57,7 @@ AgentRoute = Literal[
     "execute_workflow",
     "run_calculator",
     "run_email",
+    "run_gmail_inbox",
     "math_and_email",
     "run_web_search",
     "run_file_search",
@@ -92,13 +99,15 @@ def get_model():
     return _init_model()
 
 
-# Tools used only by call_model → tools loop (PDF, email, calculator fallback).
+# Tools used only by call_model → tools loop.
 llm_tools = [
     casio_calculator,
     solve_math_batch_tool,
     generate_pdf_report,
     generate_table_report,
-    send_email,
+    read_unread_gmail,
+    reply_to_gmail_message,
+    process_gmail_inbox,
 ]
 
 tool_node = ToolNode(llm_tools)
@@ -140,6 +149,10 @@ def _pick_route(
     """Decide which graph branch should handle the request."""
     if not _is_fresh_user_turn(messages):
         return "call_model"
+
+    # Prioritize Gmail inbox auto-reply intent before generic workflow planning.
+    if wants_gmail_inbox_reply(user_text):
+        return "run_gmail_inbox"
 
     task_plan = plan_tasks(user_text, web_search_enabled)
     if task_plan.is_multi_task:
@@ -209,21 +222,28 @@ async def run_calculator(state: State) -> dict[str, Any]:
 
 
 async def run_email(state: State) -> dict[str, Any]:
-    """Email prior results to the user."""
+    """Legacy email route now mapped to Gmail API inbox flow."""
     messages, _ = _prepare_messages(state)
     user_text = get_latest_user_text(messages)
-    response = await run_in_thread(email_fallback_response, messages, user_text)
+    response = await run_in_thread(gmail_inbox_fallback_response, user_text)
+    return {"messages": [response]}
+
+
+async def run_gmail_inbox(state: State) -> dict[str, Any]:
+    """Process unread Gmail inbox messages via OAuth and Ollama auto-replies."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    response = await run_in_thread(gmail_inbox_fallback_response, user_text)
     return {"messages": [response]}
 
 
 async def math_and_email(state: State) -> dict[str, Any]:
-    """Calculate math then email the answers."""
+    """Calculate math then process Gmail inbox action."""
     messages, _ = _prepare_messages(state)
     user_text = get_latest_user_text(messages)
     math_response = await run_in_thread(math_fallback_response, user_text)
     email_response = await run_in_thread(
-        email_fallback_response,
-        [*messages, math_response],
+        gmail_inbox_fallback_response,
         user_text,
     )
     combined = AIMessage(
@@ -317,8 +337,8 @@ def route_after_model(state: State) -> Literal["tools", END]:
 # Graph: visible workflow in LangGraph Studio
 #
 #   START → prepare_input → decision_agent →
-#       execute_workflow | run_calculator | run_email | math_and_email |
-#       run_web_search | run_file_search | call_model → tools ↺ → END
+#       execute_workflow | run_calculator | run_email | run_gmail_inbox |
+#       math_and_email | run_web_search | run_file_search | call_model → tools ↺ → END
 # ---------------------------------------------------------------------------
 
 graph_builder = StateGraph(State)
@@ -328,6 +348,7 @@ graph_builder.add_node("decision_agent", decision_agent)
 graph_builder.add_node("execute_workflow", execute_workflow)
 graph_builder.add_node("run_calculator", run_calculator)
 graph_builder.add_node("run_email", run_email)
+graph_builder.add_node("run_gmail_inbox", run_gmail_inbox)
 graph_builder.add_node("math_and_email", math_and_email)
 graph_builder.add_node("run_web_search", run_web_search)
 graph_builder.add_node("run_file_search", run_file_search)
@@ -343,6 +364,7 @@ graph_builder.add_conditional_edges(
         "execute_workflow": "execute_workflow",
         "run_calculator": "run_calculator",
         "run_email": "run_email",
+        "run_gmail_inbox": "run_gmail_inbox",
         "math_and_email": "math_and_email",
         "run_web_search": "run_web_search",
         "run_file_search": "run_file_search",
@@ -352,6 +374,7 @@ graph_builder.add_conditional_edges(
 graph_builder.add_edge("execute_workflow", END)
 graph_builder.add_edge("run_calculator", END)
 graph_builder.add_edge("run_email", END)
+graph_builder.add_edge("run_gmail_inbox", END)
 graph_builder.add_edge("math_and_email", END)
 graph_builder.add_edge("run_web_search", END)
 graph_builder.add_edge("run_file_search", END)

@@ -6,6 +6,7 @@ from agent.routing import (
     is_math_query,
     pick_tool_choice,
     wants_email,
+    wants_gmail_inbox_reply,
 )
 
 
@@ -32,10 +33,15 @@ def test_single_math_tool_choice():
 
 def test_email_intent():
     assert wants_email("send these answers to my email")
-    assert pick_tool_choice("email me the results") == {
-        "type": "function",
-        "function": {"name": "send_email"},
-    }
+    assert pick_tool_choice("email me the results") is None
+
+
+def test_gmail_inbox_intent():
+    assert wants_gmail_inbox_reply("process my unread emails in gmail inbox")
+    assert wants_gmail_inbox_reply("auto reply to unread messages")
+    assert not wants_gmail_inbox_reply("email me the pdf report")
+    # Inbox intent must not be treated as SMTP outbound email.
+    assert not wants_email("reply to my unread emails")
 
 
 def test_extract_expression():

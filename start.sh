@@ -75,27 +75,35 @@ run_ui() {
 
 run_server() {
     stop_langgraph
-    echo -e "${BLUE}Starting LangGraph Server...${NC}"
-    echo -e "${YELLOW}API:    http://127.0.0.1:${LANGGRAPH_PORT}${NC}"
-    echo -e "${YELLOW}Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:${LANGGRAPH_PORT}${NC}"
+    echo -e "${BLUE}Starting LangGraph Server with Cloudflare Tunnel...${NC}"
+    echo ""
+    echo -e "${YELLOW}⚠️  Using tunnel to expose local server to smith.langchain.com${NC}"
+    echo -e "${YELLOW}    (Browser security prevents direct localhost access)${NC}"
+    echo ""
+    echo -e "${YELLOW}After tunnel is ready, Studio will open automatically.${NC}"
+    echo -e "${YELLOW}If not, visit the URL printed in the output below.${NC}"
     echo ""
     trap - EXIT INT TERM
-    uv run langgraph dev --port "${LANGGRAPH_PORT}"
+    uv run langgraph dev --port "${LANGGRAPH_PORT}" --tunnel
 }
 
 run_both() {
     stop_all_services
 
-    echo -e "${BLUE}Starting LangGraph Server + Streamlit UI...${NC}"
-    echo -e "${YELLOW}Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:${LANGGRAPH_PORT}${NC}"
+    echo -e "${BLUE}Starting LangGraph Server (with Tunnel) + Streamlit UI...${NC}"
+    echo ""
+    echo -e "${YELLOW}⚠️  Using tunnel to expose local server to smith.langchain.com${NC}"
+    echo -e "${YELLOW}    (Browser security prevents direct localhost access)${NC}"
+    echo ""
+    echo -e "${YELLOW}Studio will open automatically once tunnel is ready.${NC}"
     echo -e "${YELLOW}UI:     http://localhost:${STREAMLIT_PORT}${NC}"
     echo ""
 
-    uv run langgraph dev --port "${LANGGRAPH_PORT}" &
+    uv run langgraph dev --port "${LANGGRAPH_PORT}" --tunnel &
     LANGGRAPH_PID=$!
 
     echo "Waiting for LangGraph server..."
-    wait_for_port "${LANGGRAPH_PORT}" 20
+    wait_for_port "${LANGGRAPH_PORT}" 30
 
     trap cleanup EXIT INT TERM
 

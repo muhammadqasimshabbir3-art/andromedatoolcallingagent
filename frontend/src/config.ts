@@ -8,6 +8,10 @@
  *   VITE_LANGGRAPH_API_URL=/api   (or leave unset; defaults to /api)
  *   VITE_LANGSMITH_API_KEY=<your langsmith key>   (only if server requires auth)
  *
+ * Remote dev with smith.langchain.com:
+ *   VITE_LANGGRAPH_API_URL=http://127.0.0.1:2024
+ *   The LangGraph server CORS config must allow https://smith.langchain.com
+ *
  * Local dev — leave VITE_LANGGRAPH_API_URL empty to use Vite proxy /api → LANGGRAPH_PORT
  */
 function readApiUrl(): string {
