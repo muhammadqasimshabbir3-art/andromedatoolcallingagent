@@ -166,3 +166,7 @@ reports/
 *.pdf
 .ruff_cache/
 Andromeda.egg-info/
+
+# Gmail OAuth credentials (never commit)
+client_secret.json
+gmail_token.json

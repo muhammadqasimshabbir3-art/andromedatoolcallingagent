@@ -33,7 +33,13 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
   // which would incorrectly indicate the backend is healthy. We require a
   // JSON response with { ok: true } to consider the health check successful.
   try {
-    const res = await fetch(healthCheckUrl(), { method: "GET" });
+    const res = await fetch(healthCheckUrl(), {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        "Accept": "application/json",
+      },
+    });
     if (res.ok) {
       try {
         const ct = res.headers.get("content-type") || "";

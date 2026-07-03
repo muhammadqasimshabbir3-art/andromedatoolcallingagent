@@ -51,3 +51,28 @@ async def test_agent_with_file_search() -> None:
     result = await graph.ainvoke(inputs)
     assert result is not None
     assert result.get("agent_route") == "run_file_search"
+
+
+@pytest.mark.langsmith
+async def test_agent_routes_gmail_inbox(monkeypatch) -> None:
+    """Test agent routes unread Gmail inbox requests to run_gmail_inbox."""
+    import importlib
+
+    from langchain_core.messages import AIMessage
+
+    graph_module = importlib.import_module("agent.graph")
+    monkeypatch.setattr(
+        graph_module,
+        "gmail_inbox_fallback_response",
+        lambda _user_text: AIMessage(content="Gmail inbox auto-reply complete."),
+    )
+
+    inputs = {
+        "messages": [
+            HumanMessage(content="Process my unread emails in Gmail inbox")
+        ],
+        "user_input": "Process my unread emails in Gmail inbox",
+    }
+    result = await graph.ainvoke(inputs)
+    assert result is not None
+    assert result.get("agent_route") == "run_gmail_inbox"

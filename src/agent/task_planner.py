@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from agent.custom_tools.calculator_tools import extract_math_expressions
 from agent.report_planning import extract_report_topic, infer_report_aspects
-from agent.routing import is_math_query, wants_email
+from agent.routing import is_math_query, wants_gmail_inbox_reply
 
 INTRO_KEYWORDS = (
     "introduce yourself",
@@ -264,8 +264,11 @@ def plan_tasks(user_text: str, web_search_enabled: bool = False) -> TaskPlan:
     if wants_pdf(user_text):
         plan.tasks.append("create_pdf")
 
-    if wants_email(user_text):
-        plan.tasks.append("send_email")
+    if wants_gmail_inbox_reply(user_text):
+        return plan
+
+    # SMTP email workflow disabled: Gmail API inbox operations are handled
+    # through dedicated routing/tools rather than report-email tasks.
 
     if should_use_web_search(user_text, web_search_enabled):
         from agent.custom_tools.web_search_tools import extract_search_query

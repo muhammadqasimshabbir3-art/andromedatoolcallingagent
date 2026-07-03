@@ -31,6 +31,29 @@ EMAIL_KEYWORDS = (
     "gmail",
 )
 
+# Gmail API inbox auto-reply (OAuth) — checked before generic SMTP email routing.
+GMAIL_INBOX_KEYWORDS = (
+    "unread email",
+    "unread emails",
+    "unread message",
+    "unread messages",
+    "unread mail",
+    "gmail inbox",
+    "my inbox",
+    "process inbox",
+    "read inbox",
+    "inbox reply",
+    "inbox replies",
+    "auto reply",
+    "auto-reply",
+    "auto reply to",
+    "reply to unread",
+    "reply to my emails",
+    "reply to emails in",
+    "gmail api",
+    "oauth gmail",
+)
+
 
 def get_latest_user_text(messages: list[AnyMessage]) -> str:
     """Return the most recent human message text."""
@@ -81,8 +104,16 @@ def is_batch_math_query(text: str) -> bool:
     return len(lines) >= 2 and is_math_query(text)
 
 
+def wants_gmail_inbox_reply(text: str) -> bool:
+    """Detect Gmail API inbox auto-reply intent (OAuth unread processing)."""
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in GMAIL_INBOX_KEYWORDS)
+
+
 def wants_email(text: str) -> bool:
-    """Detect whether the user wants results sent by email."""
+    """Detect whether the user wants results sent by email (SMTP outbound)."""
+    if wants_gmail_inbox_reply(text):
+        return False
     lowered = text.lower()
     return any(keyword in lowered for keyword in EMAIL_KEYWORDS)
 
@@ -119,8 +150,8 @@ def pick_tool_choice(user_text: str) -> dict[str, object] | None:
         )
         return {"type": "function", "function": {"name": tool_name}}
 
-    if wants_email(user_text):
-        return {"type": "function", "function": {"name": "send_email"}}
+    if wants_gmail_inbox_reply(user_text):
+        return {"type": "function", "function": {"name": "process_gmail_inbox"}}
 
     return None
 
@@ -152,11 +183,39 @@ def build_email_body_from_history(messages: list[AnyMessage], user_text: str) ->
 
 def email_fallback_response(messages: list[AnyMessage], user_text: str) -> AIMessage:
     """Send email directly when the user asks to share results."""
+    if wants_gmail_inbox_reply(user_text):
+        return gmail_inbox_fallback_response(user_text)
+
     from agent.custom_tools.email_tools import send_smtp_email
 
     subject = "Andromeda Agent — Your Results"
     body = build_email_body_from_history(messages, user_text)
     result = send_smtp_email(subject=subject, body=body)
+    return AIMessage(content=result)
+
+
+def gmail_inbox_fallback_response(user_text: str) -> AIMessage:
+    """Read/reply Gmail inbox messages via OAuth (no SMTP)."""
+    from agent.custom_tools.gmail_inbox_tools import (
+        extract_gmail_inbox_limit,
+        process_gmail_inbox_sync,
+        read_unread_gmail_sync,
+        reply_to_gmail_message_sync,
+    )
+
+    lowered = user_text.lower()
+    msg_match = re.search(r"(?:message[_\s-]?id[:\s]+)([A-Za-z0-9_-]+)", user_text)
+    if "reply" in lowered and msg_match:
+        result = reply_to_gmail_message_sync(message_id=msg_match.group(1))
+        return AIMessage(content=result)
+
+    if "read" in lowered and "reply" not in lowered:
+        limit = extract_gmail_inbox_limit(user_text) or 5
+        result = read_unread_gmail_sync(limit=limit)
+        return AIMessage(content=result)
+
+    limit = extract_gmail_inbox_limit(user_text)
+    result = process_gmail_inbox_sync(limit=limit)
     return AIMessage(content=result)
 
 
