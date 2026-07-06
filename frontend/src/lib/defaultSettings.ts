@@ -17,6 +17,8 @@ export function defaultRunSettings(): AgentRunSettings {
   return {
     user_input: envStr("VITE_DEFAULT_USER_INPUT", "What is log(1000) + sin(30)?"),
     web_search_enabled: envBool("VITE_DEFAULT_WEB_SEARCH", false),
+    user_latitude: 0,
+    user_longitude: 0,
   };
 }
 

@@ -10,10 +10,12 @@ import asyncio
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage
 
 from agent import GRAPH_RUN_CONFIG, graph
+from agent.custom_tools.location_tools import wants_location
 
 load_dotenv()
 
@@ -25,10 +27,124 @@ def init_session_state() -> None:
         "query_count": 0,
         "web_search_enabled": False,
         "auto_send_query": None,
+        "pending_location_query": None,
+        "user_latitude": 0.0,
+        "user_longitude": 0.0,
+        "location_permission_denied": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+
+def _query_param_value(name: str) -> str:
+    """Read a query param value across Streamlit versions."""
+    if hasattr(st, "query_params"):
+        params = st.query_params
+    else:
+        params = st.experimental_get_query_params()
+
+    value = params.get(name, "")
+    if isinstance(value, list):
+        return value[0] if value else ""
+    return str(value)
+
+
+def sync_browser_location_from_query_params() -> None:
+    """Copy browser geolocation callback values into session state."""
+    status = _query_param_value("andromeda_location_status")
+    if status == "denied":
+        st.session_state.location_permission_denied = True
+        return
+
+    lat_raw = _query_param_value("andromeda_lat")
+    lng_raw = _query_param_value("andromeda_lng")
+    if not lat_raw or not lng_raw:
+        return
+
+    try:
+        st.session_state.user_latitude = float(lat_raw)
+        st.session_state.user_longitude = float(lng_raw)
+        st.session_state.location_permission_denied = False
+    except ValueError:
+        return
+
+
+def has_browser_location() -> bool:
+    """Return True when Streamlit has real browser coordinates."""
+    return bool(st.session_state.user_latitude or st.session_state.user_longitude)
+
+
+def request_browser_location() -> None:
+    """Ask the browser for location permission and round-trip via query params."""
+    components.html(
+        """
+        <script>
+        const params = new URLSearchParams(window.parent.location.search);
+        let completed = false;
+
+        function updateLocationParams(values) {
+          if (completed) return;
+          completed = true;
+          Object.entries(values).forEach(([key, value]) => params.set(key, value));
+          window.parent.location.search = params.toString();
+        }
+
+        if (!navigator.geolocation) {
+          updateLocationParams({ andromeda_location_status: "denied" });
+        } else {
+          window.setTimeout(() => {
+            updateLocationParams({ andromeda_location_status: "timeout" });
+          }, 12000);
+
+          navigator.geolocation.getCurrentPosition(
+            (pos) => updateLocationParams({
+              andromeda_location_status: "granted",
+              andromeda_lat: String(pos.coords.latitude),
+              andromeda_lng: String(pos.coords.longitude),
+              andromeda_location_ts: String(Date.now()),
+            }),
+            () => updateLocationParams({ andromeda_location_status: "denied" }),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+          );
+        }
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_manual_location_form(pending_query: str) -> None:
+    """Render a fallback coordinate form for Streamlit geolocation failures."""
+    st.warning(
+        "Browser location did not reach Streamlit. Enter coordinates below, "
+        "or use the React frontend for automatic browser geolocation."
+    )
+
+    with st.form("manual_location_form"):
+        col_lat, col_lng = st.columns(2)
+        with col_lat:
+            latitude = st.number_input(
+                "Latitude",
+                value=float(st.session_state.user_latitude or 0.0),
+                format="%.8f",
+            )
+        with col_lng:
+            longitude = st.number_input(
+                "Longitude",
+                value=float(st.session_state.user_longitude or 0.0),
+                format="%.8f",
+            )
+
+        submitted = st.form_submit_button("Continue with these coordinates")
+
+    if submitted:
+        st.session_state.user_latitude = float(latitude)
+        st.session_state.user_longitude = float(longitude)
+        st.session_state.location_permission_denied = False
+        st.session_state.pending_location_query = None
+        process_user_message(pending_query)
+        st.rerun()
 
 
 def build_langchain_messages(history: list[dict]) -> list:
@@ -63,6 +179,12 @@ def process_user_message(user_text: str) -> None:
         st.error("User input is required. Please type a message before sending.")
         return
 
+    if wants_location(user_text) and not has_browser_location():
+        if not st.session_state.location_permission_denied:
+            st.session_state.pending_location_query = user_text
+            st.info("Please allow location access in your browser to continue.")
+            return
+
     st.session_state.messages.append(
         {
             "role": "user",
@@ -79,6 +201,8 @@ def process_user_message(user_text: str) -> None:
                 "messages": lc_messages,
                 "user_input": user_text,
                 "web_search_enabled": st.session_state.web_search_enabled,
+                "user_latitude": st.session_state.user_latitude,
+                "user_longitude": st.session_state.user_longitude,
             }
 
             loop = asyncio.new_event_loop()
@@ -137,7 +261,6 @@ def display_sidebar() -> None:
 
         st.subheader("Conversation")
         turn_count = len(st.session_state.messages)
-        user_turns = sum(1 for m in st.session_state.messages if m.get("role") == "user")
         st.metric("Messages in memory", turn_count)
         st.caption(
             "The agent receives the full conversation on every turn, "
@@ -147,6 +270,8 @@ def display_sidebar() -> None:
         if st.button("🗑️ Clear conversation", use_container_width=True):
             st.session_state.messages = []
             st.session_state.query_count = 0
+            st.session_state.pending_location_query = None
+            st.session_state.location_permission_denied = False
             st.rerun()
 
         st.divider()
@@ -195,6 +320,7 @@ def main() -> None:
     )
 
     init_session_state()
+    sync_browser_location_from_query_params()
     display_sidebar()
 
     col_logo, col_title = st.columns([1, 5])
@@ -221,6 +347,27 @@ def main() -> None:
         avatar = "👤" if role == "user" else "🤖"
         with st.chat_message(role, avatar=avatar):
             st.markdown(msg.get("content", ""))
+
+    if st.session_state.pending_location_query:
+        pending = st.session_state.pending_location_query
+        if has_browser_location():
+            st.session_state.pending_location_query = None
+            process_user_message(pending)
+            st.rerun()
+        if st.session_state.location_permission_denied:
+            render_manual_location_form(pending)
+            st.stop()
+
+        status = _query_param_value("andromeda_location_status")
+        if status == "timeout":
+            render_manual_location_form(pending)
+            st.stop()
+
+        st.info("Please approve the browser location request to continue.")
+        with st.spinner("Waiting for browser location..."):
+            request_browser_location()
+        render_manual_location_form(pending)
+        st.stop()
 
     # Auto-send from sidebar example buttons
     if st.session_state.auto_send_query:

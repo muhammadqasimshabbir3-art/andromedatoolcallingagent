@@ -56,6 +56,14 @@ export const WORKFLOW_STEPS: WorkflowStep[] = [
     emoji: "🗂️",
   },
   {
+    id: "run_location",
+    nodes: ["run_location"],
+    label: "📍 Live Location",
+    description: "Reverse geocode coordinates and search nearby places",
+    optional: true,
+    emoji: "📍",
+  },
+  {
     id: "run_email",
     nodes: ["run_email"],
     label: "📧 Email Dispatch",
@@ -115,6 +123,8 @@ export function detailForNode(nodeName: string, payload: Record<string, unknown>
       return "Web search completed.";
     case "run_file_search":
       return "File search completed.";
+    case "run_location":
+      return "Location lookup completed.";
     case "run_email":
       return "Email sent successfully.";
     case "math_and_email":
