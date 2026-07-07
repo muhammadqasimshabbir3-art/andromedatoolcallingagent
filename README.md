@@ -1,8 +1,8 @@
 # Andromeda Agent
 
-**A multi-tool LangGraph agent powered by Groq (Llama 3.1)**
+**A multi-tool LangGraph assistant powered by Groq, Gmail, web/file tools, PDF analysis, and browser-based UIs.**
 
-Andromeda is an intelligent assistant that combines a **decision agent**, **dedicated tool nodes**, and a **Streamlit chat UI**. It understands natural-language requests and routes them to the right capability — scientific math, web search, local file search, PDF generation, and Gmail email — without manual tool selection.
+Andromeda is an intelligent workflow agent that routes natural-language requests to the right capability: scientific calculation, web search, local file search, live location lookup, PDF generation, uploaded-PDF analysis, Gmail inbox automation, and general conversation.
 
 | | |
 |---|---|
@@ -15,23 +15,25 @@ Andromeda is an intelligent assistant that combines a **decision agent**, **dedi
 
 ## What Andromeda Does
 
-Andromeda is built for **real multi-step workflows** in a single conversation. Ask it to introduce itself, solve a batch of engineering exam problems, generate a stylized PDF report, and email the results — it plans the steps and executes them in order.
+Andromeda is built for real multi-step workflows. You can ask it to calculate a batch of engineering expressions, create a PDF report, analyze an uploaded PDF, search the web, find local files, check your location, or process unread Gmail messages.
 
-For simpler requests, a **decision agent** analyzes your query and sends it directly to the correct graph node (calculator, file search, web search, email, or general chat).
+A decision agent analyzes each message and chooses one route through the LangGraph graph. Simple requests go directly to a dedicated node. Broader conversations use the Groq model with bound tools.
 
-### Core capabilities
+### Core Capabilities
 
 | Capability | Description |
 |------------|-------------|
-| **Casio-style calculator** | Logs, natural log, trig (DEG mode), powers, factorials, complex numbers (iota), batch expression solving |
-| **Web search** | DuckDuckGo via LangChain — no API key required; enable with the 🔍 toggle in the UI |
-| **File search** | Find local files by name, extension (`.pdf`, `.csv`, etc.), or pattern |
-| **PDF reports** | Generate styled text and table reports saved under `./reports/` |
-| **Email (Gmail SMTP)** | Send results and attach generated PDFs via Gmail App Password |
-| **Gmail inbox (OAuth)** | Read unread inbox, Ollama replies in-thread via Gmail API |
-| **Multi-task pipeline** | Introduce → calculate → create PDF → email in one message |
-| **Streamlit UI** | Required user input, chat history, search toggle, example queries |
-| **LangGraph Studio** | Visual debugging of all 10 graph nodes |
+| **Scientific calculator** | Logs, natural log, trig in degree mode, powers, factorials, complex numbers, and batch expression solving |
+| **Web search** | DuckDuckGo/DDGS search through LangChain community tools; no separate search API key required |
+| **File search** | Find files by name, extension, directory, or pattern |
+| **PDF reports** | Generate styled text and table reports with ReportLab |
+| **PDF analysis** | Upload PDFs, extract text with `pypdf`, build an in-memory Chroma index, summarize, and answer PDF-grounded questions |
+| **Gmail inbox automation** | OAuth Gmail API flow to read unread messages, generate replies with Groq or Ollama, reply in-thread, and mark messages as read |
+| **Live location** | Browser coordinates plus OpenStreetMap Nominatim/Overpass lookups for address and nearby places |
+| **Conversation memory** | Streamlit and React flows send message history/state so follow-up requests can reference prior answers |
+| **Multi-task routing** | Plan and execute multi-step requests such as calculate -> generate PDF -> email/process inbox |
+| **LangGraph Studio** | Visual debugging through `langgraph dev` |
+| **UIs** | Streamlit chat UI and a Vite/React dashboard frontend |
 
 ---
 
@@ -39,339 +41,349 @@ For simpler requests, a **decision agent** analyzes your query and sends it dire
 
 | Layer | Technology |
 |-------|------------|
-| Orchestration | [LangGraph](https://langchain-ai.github.io/langgraph/) `StateGraph` |
-| LLM | Groq `llama-3.1-8b-instant` via `ChatGroq` |
+| Orchestration | LangGraph `StateGraph` |
+| LLM | Groq through `langchain-groq` |
 | Tools | LangChain `@tool` decorators |
-| Web search | `langchain-community` + `duckduckgo-search` |
-| Math engine | SymPy |
+| Web search | `langchain-community`, `duckduckgo-search`, `ddgs` |
+| Math | SymPy |
 | PDF generation | ReportLab |
-| UI | Streamlit |
-| Package manager | [uv](https://github.com/astral-sh/uv) |
-| API / Studio | LangGraph Server (`langgraph dev`) |
+| PDF analysis | `pypdf` + in-memory ChromaDB |
+| Gmail | Gmail API OAuth client libraries; legacy SMTP helper still exists in `email_tools.py` |
+| Location | OpenStreetMap Nominatim + Overpass API |
+| Python UI | Streamlit |
+| Frontend UI | React 19 + Vite + TypeScript + LangGraph SDK |
+| Package manager | `uv` |
+| Deployment | Docker/LangGraph API, Railway config, Vercel frontend config |
 
 ---
 
 ## Architecture
 
+```text
+User
+  |
+  v
+Streamlit UI or React frontend
+  |
+  v
+prepare_input -> decision_agent
+                 |
+                 +-> execute_workflow
+                 +-> run_calculator
+                 +-> run_email / run_gmail_inbox
+                 +-> math_and_email
+                 +-> run_web_search
+                 +-> run_file_search
+                 +-> run_location
+                 +-> run_pdf_analysis
+                 +-> call_model -> tools -> call_model
 ```
-User (Streamlit UI)
-        │
-        ▼
-  prepare_input ──► decision_agent
-        │                │
-        │    ┌───────────┼───────────┬────────────┬──────────────┐
-        │    ▼           ▼           ▼            ▼              ▼
-        │ execute_   run_        run_      run_web_      run_file_
-        │ workflow   calculator  email     search        search
-        │    │           │           │            │              │
-        │    └───────────┴───────────┴────────────┴──────────────┘
-        │                              │
-        │                    call_model ⇄ tools
-        │                    (PDF, email, calculator fallback)
-        ▼
-       END
-```
 
-### Decision agent routing
+### Graph Nodes
 
-On each new user message, `decision_agent` (`task_planner.py`) chooses **one** path:
-
-1. **Multi-task** → `execute_workflow` (2+ tasks: intro, math, PDF, email)
-2. **Math + email** → `math_and_email`
-3. **Math only** → `run_calculator`
-4. **Email only** → `run_email`
-5. **Web search** → `run_web_search` (only if 🔍 is enabled **and** the query needs live web info)
-6. **File search** → `run_file_search`
-7. **General chat** → `call_model` → `tools` loop
-
-### Graph nodes (11)
+The compiled graph currently contains these 13 nodes:
 
 | Node | Purpose |
 |------|---------|
-| `prepare_input` | Normalize `user_input` into messages |
-| `decision_agent` | Plan tasks and set `agent_route` |
-| `execute_workflow` | Multi-step: intro → math → PDF → email |
-| `run_calculator` | Direct Casio calculator path |
-| `run_email` | Send prior results via Gmail SMTP |
-| `run_gmail_inbox` | OAuth Gmail API: unread inbox auto-replies (Ollama) |
-| `math_and_email` | Calculate then email |
-| `run_web_search` | DuckDuckGo web search |
-| `run_file_search` | Local filesystem search |
-| `call_model` | Groq LLM with tool binding |
-| `tools` | Execute LLM-selected tools |
+| `prepare_input` | Normalize `user_input` or existing `messages` into graph messages |
+| `decision_agent` | Choose an execution route and summarize the task plan |
+| `execute_workflow` | Run multi-step planned workflows |
+| `run_calculator` | Direct calculator path for math-only requests |
+| `run_email` | Maps email intent to the Gmail inbox flow |
+| `run_gmail_inbox` | Process unread Gmail messages through OAuth + Groq/Ollama |
+| `math_and_email` | Calculate first, then run the Gmail inbox action |
+| `run_web_search` | Run web search when the web toggle/state allows it |
+| `run_file_search` | Search local files |
+| `run_location` | Reverse-geocode browser coordinates and find nearby places |
+| `run_pdf_analysis` | Summarize or answer questions against an uploaded PDF |
+| `call_model` | General Groq chat path with tool binding |
+| `tools` | Execute model-selected tools and loop back to `call_model` |
 
-Full diagrams and flows: **[AgentWorkflow.md](./AgentWorkflow.md)**
+More flow detail is in [AgentWorkflow.md](./AgentWorkflow.md).
 
 ---
 
-## Tools
+## Repository Layout
 
-| Tool | Graph path | When it runs |
-|------|------------|--------------|
-| `casio_calculator` | `run_calculator` | Math expressions detected |
-| `solve_math_batch_tool` | `run_calculator` / `tools` | Multiple problems in one query |
-| `web_search` | `run_web_search` | User enabled 🔍 + query needs internet |
-| `search_files` | `run_file_search` | Find/list local files |
-| `generate_pdf_report` | `execute_workflow` / `tools` | PDF report requested |
-| `generate_table_report` | `tools` | Table data → PDF |
-| `send_email` | `run_email` / `execute_workflow` / `tools` | Email intent detected |
+```text
+.
+├── README.md
+├── AgentWorkflow.md
+├── Dockerfile
+├── langgraph.json
+├── pyproject.toml
+├── setup.sh
+├── start.sh
+├── streamlit_ui.py
+├── railway.json
+├── vercel.json
+├── frontend/
+│   ├── package.json
+│   ├── vite.config.ts
+│   ├── .env.example
+│   └── src/
+│       ├── App.tsx
+│       ├── config.ts
+│       ├── components/
+│       ├── hooks/
+│       └── lib/
+├── scripts/
+│   └── services.sh
+├── src/
+│   ├── gmail_agent.py
+│   └── agent/
+│       ├── graph.py
+│       ├── routing.py
+│       ├── task_planner.py
+│       ├── workflow_executor.py
+│       ├── pdf_analysis.py
+│       └── custom_tools/
+│           ├── calculator_tools.py
+│           ├── email_tools.py
+│           ├── file_search_tools.py
+│           ├── gmail_inbox_tools.py
+│           ├── location_tools.py
+│           ├── pdf_generator.py
+│           └── web_search_tools.py
+└── tests/
+    ├── unit_tests/
+    └── integration_tests/
+```
 
 ---
 
 ## Prerequisites
 
-- **Python** 3.11 or 3.12
-- **[uv](https://github.com/astral-sh/uv)** (recommended) or pip
-- **Groq API key** — [console.groq.com](https://console.groq.com/)
-- **Gmail App Password** — only if you use the SMTP email feature ([Google Account → Security → App passwords](https://myaccount.google.com/apppasswords))
-- **Gmail API credentials** — enable the Gmail API in Google Cloud Console, create an OAuth 2.0 "Desktop" client, and download the client_secrets JSON file.
+- Python 3.11 or 3.12
+- `uv`
+- Groq API key for the main agent
+- Node.js and npm for the React frontend
+- Gmail OAuth Desktop credentials if you want Gmail inbox automation
+- Ollama only if you want local fallback replies for Gmail automation
 
-Web search requires **no additional API keys**.
+Web search does not need a separate API key. Location lookup uses public OpenStreetMap services and can be customized with `OSM_USER_AGENT`.
 
-### Gmail API OAuth agent
+---
 
-This repository now includes a Gmail OAuth-based agent that can:
+## Environment Variables
 
-- Authenticate a user via OAuth 2.0 and cache tokens
-- Read unread messages from the inbox
-- Generate context-aware replies using an Ollama LLM server
-- Send the reply as part of the same thread and mark the original message as read
+Create a root `.env` file before running `setup.sh` or `start.sh`.
 
-Files:
+```env
+GROQ_API_KEY=gsk_your_key_here
+GROQ_MODEL=llama3-8b-8192
 
-- src/gmail_agent.py — Implementation and CLI entrypoint
+# Optional LangSmith tracing/auth
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=new-agent
 
-Configuration (add to your .env):
+# Gmail OAuth inbox automation
+GOOGLE_CLIENT_SECRETS=client_secret.json
+GMAIL_TOKEN_FILE=gmail_token.json
+GMAIL_SCOPES=https://www.googleapis.com/auth/gmail.modify
+GMAIL_USER_ID=me
+GMAIL_INBOX_QUERY=is:unread in:inbox
+GMAIL_PROCESS_LIMIT=0
 
-- GOOGLE_CLIENT_SECRETS — Path to client_secrets.json downloaded from Google Cloud Console
-- GMAIL_TOKEN_FILE — Path to save OAuth tokens (e.g., ./gmail_token.json)
-- GMAIL_SCOPES — Comma-separated Gmail scopes (default: https://www.googleapis.com/auth/gmail.modify)
-- OLLAMA_URL — e.g., http://localhost:11434
-- OLLAMA_MODEL — Ollama model name
+# Ollama fallback for Gmail replies
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2
+OLLAMA_TIMEOUT=120
+OLLAMA_MAX_TOKENS=512
 
-Setup steps:
+# Optional legacy SMTP helper
+GMAIL_SMTP_USER=your.email@gmail.com
+GMAIL_APP_PASSWORD="abcd efgh ijkl mnop"
+GMAIL_DEFAULT_RECIPIENT=your.email@gmail.com
 
-1. Enable Gmail API and create OAuth Client ID (Desktop) in Google Cloud Console.
-2. Download the client secrets JSON and place it at the path you set in GOOGLE_CLIENT_SECRETS.
-3. Add variables to your .env or environment (see .env.example).
-4. Install dependencies: pip install -e . (or use setup.sh)
-5. Install and start Ollama, then pull a model: `ollama pull llama3.2`
-6. Run the agent once to perform OAuth (opens a browser for consent):
-
-```bash
-uv run python src/gmail_agent.py
+# Optional location service identity
+OSM_USER_AGENT=AndromedaAgent/0.1 (your-contact@example.com)
+LOG_LEVEL=INFO
 ```
 
-7. Run in production (process up to 20 unread messages):
+### Frontend Environment
 
-```bash
-uv run python src/gmail_agent.py --limit 20
-```
+For the React frontend, copy [frontend/.env.example](./frontend/.env.example) to `frontend/.env` if you need custom values.
 
-Or import programmatically:
-
-```bash
-uv run python -c "from gmail_agent import process_unread_and_reply; print(process_unread_and_reply(limit=20))"
-```
-
-Security notes:
-
-- Keep client secrets and token files out of version control.
-- Use environment variables in CI and servers rather than checked-in files.
-- For long-running deployments, consider a service account with delegated domain-wide authority (advanced use-case).
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VITE_LANGGRAPH_API_URL` | `/api` | LangGraph API URL or Vite/Vercel proxy path |
+| `VITE_LANGGRAPH_ASSISTANT_ID` | `agent` | Must match `langgraph.json` graph key |
+| `VITE_LANGSMITH_API_KEY` | empty | Optional key for authenticated deployments |
+| `VITE_DEFAULT_USER_INPUT` | calculator example | Default form input |
+| `VITE_DEFAULT_WEB_SEARCH` | `false` | Default search toggle value |
 
 ---
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/YOUR_USERNAME/andromeda-agent.git
 cd andromeda-agent
 
-# Configure environment
-cp .env.example .env
-# Edit .env — at minimum set GROQ_API_KEY
+# Create and edit .env first.
+nano .env
 
-# First-time setup (installs dependencies)
 chmod +x setup.sh start.sh
 ./setup.sh
 ```
 
----
+If you prefer manual installation:
 
-## Configuration
-
-Copy `.env.example` to `.env` and fill in your values:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GROQ_API_KEY` | **Yes** | Groq API key for the LLM |
-| `GMAIL_SMTP_USER` | For email | Your Gmail address |
-| `GMAIL_APP_PASSWORD` | For email | 16-character Gmail App Password (quote if it contains spaces) |
-| `GMAIL_DEFAULT_RECIPIENT` | For email | Default recipient for `send_email` |
-| `GOOGLE_CLIENT_SECRETS` | Gmail API agent | Path to OAuth client secrets JSON |
-| `GMAIL_TOKEN_FILE` | Gmail API agent | Path to cached OAuth token file |
-| `OLLAMA_URL` | Gmail API agent | Ollama server URL (default: `http://localhost:11434`) |
-| `OLLAMA_MODEL` | Gmail API agent | Ollama model name (e.g. `llama3.2`) |
-| `LANGSMITH_API_KEY` | Optional | Enable LangSmith tracing |
-| `LANGSMITH_PROJECT` | Optional | LangSmith project name (default: `new-agent`) |
-
-**Example `.env`:**
-
-```env
-GROQ_API_KEY=gsk_your_key_here
-GMAIL_SMTP_USER=your.email@gmail.com
-GMAIL_APP_PASSWORD="abcd efgh ijkl mnop"
-GMAIL_DEFAULT_RECIPIENT=your.email@gmail.com
+```bash
+uv venv .venv
+uv sync
 ```
 
 ---
 
-## Running Andromeda
-
-| Command | Description | URL |
-|---------|-------------|-----|
-| `./start.sh ui` | Streamlit chat interface | http://localhost:8501 |
-| `./start.sh server` | LangGraph API + Studio | http://localhost:2024/studio |
-| `./start.sh both` | UI and Studio together | Both URLs above |
-| `./start.sh stop` | Stop running services | — |
-| `uv run langgraph dev` | LangGraph dev server only | http://localhost:2024 |
+## Running The Project
 
 ### Streamlit UI
 
-- **User input is required** — empty sends show an error
-- **🔍 toggle** — enable web search; the decision agent searches only when your query needs live information
-- **Example queries** — click sidebar buttons to pre-fill common requests
-- **Chat history** — full conversation displayed in the main panel
+```bash
+./start.sh ui
+```
+
+Open `http://localhost:8501`.
+
+The Streamlit UI includes chat history, web-search toggle, PDF upload/analysis, browser geolocation fallback, environment status, and example prompts.
+
+### LangGraph Server And Studio
+
+```bash
+./start.sh server
+```
+
+By default `start.sh server` runs `langgraph dev` on port `2024` with a tunnel for LangGraph Studio.
+
+You can also run the local server directly:
+
+```bash
+uv run langgraph dev --port 2024
+```
+
+### Streamlit + LangGraph Server
+
+```bash
+./start.sh both
+```
+
+### React Frontend
+
+Start the LangGraph server first, then run the frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173`.
+
+The React app provides a dashboard-style interface with connection diagnostics, run controls, workflow progress, activity log, result display, persisted run/session state, optional PDF state, and frontend defaults from Vite environment variables.
 
 ---
 
-## Example queries
+## Gmail OAuth Inbox Automation
 
-| Query | Route |
-|-------|-------|
+This project can read unread Gmail messages, draft replies with Groq or Ollama, send replies in the same thread, and mark messages as read.
+
+Setup:
+
+1. Enable the Gmail API in Google Cloud Console.
+2. Create an OAuth Client ID with application type `Desktop app`.
+3. Download the JSON credentials file.
+4. Set `GOOGLE_CLIENT_SECRETS` in `.env` to that JSON file path.
+5. Set `GMAIL_TOKEN_FILE` to where the OAuth token should be cached.
+6. Run the agent once to complete browser consent.
+
+```bash
+uv run python src/gmail_agent.py
+uv run python src/gmail_agent.py --limit 5
+```
+
+You can also trigger the flow through chat with prompts like:
+
+```text
+Process my unread Gmail inbox messages
+Read my 5 unread emails
+Reply to unread Gmail messages
+```
+
+Keep OAuth secrets and token files out of version control.
+
+---
+
+## Example Prompts
+
+| Prompt | Expected route |
+|--------|----------------|
 | `What is log(1000) + sin(30)?` | `run_calculator` |
 | `Find all CSV files in current directory` | `run_file_search` |
-| `Search the web for Python best practices` | `run_web_search` (🔍 on) |
-| `Email me a summary of today's findings` | `run_email` (SMTP) |
-| `Process my unread emails in Gmail inbox` | `run_gmail_inbox` (OAuth) |
-| `Generate a PDF report about AI and email it to me` | `call_model` → `tools` |
-| Multi-step exam query (intro + 11 math problems + PDF + email) | `execute_workflow` |
-
-**Multi-task example:**
-
-```
-Introduce yourself, then calculate:
-log(1000) + ln(E^5), sin(73.5) * cos(41.2) + tan(12.7), (3 + 4i)^7
-Create a stylized PDF with questions and answers, then email it to me.
-```
-
----
-
-## Project structure
-
-```
-andromeda/
-├── README.md                    # This file
-├── AgentWorkflow.md             # Graph architecture and flows
-├── LICENSE                      # MIT
-├── pyproject.toml               # Dependencies and package metadata
-├── langgraph.json               # LangGraph Server configuration
-├── .env.example                 # Environment template
-│
-├── docs/
-│   ├── GITHUB_SETUP.md          # Publish to GitHub
-│   └── PROJECT_STRUCTURE.md     # Detailed layout
-│
-├── scripts/
-│   └── services.sh              # Port/process helpers
-│
-├── setup.sh                     # First-time install
-├── start.sh                     # Run UI / server / both
-├── streamlit_ui.py              # Chat web interface
-│
-├── src/
-│   ├── gmail_agent.py           # Gmail API OAuth agent (Ollama replies)
-│   └── agent/
-│       ├── graph.py             # LangGraph definition (nodes, edges)
-│       ├── task_planner.py      # Decision agent — task planning
-│       ├── routing.py           # Intent detection and fallbacks
-│       ├── workflow_executor.py # Multi-step pipeline executor
-│       ├── async_utils.py       # Async wrappers for blocking I/O
-│       └── custom_tools/
-│           ├── calculator_tools.py  # Casio-style scientific calculator
-│           ├── web_search_tools.py  # DuckDuckGo web search
-│           ├── file_search_tools.py # Local file search
-│           ├── email_tools.py       # Gmail SMTP
-│           └── pdf_generator.py     # ReportLab PDF reports
-│
-├── tests/
-│   ├── unit_tests/              # Unit tests (34+ tests)
-│   └── integration_tests/       # Graph integration tests
-│
-└── reports/                     # Generated PDFs (gitignored)
-```
+| `Search the web for Python best practices` | `run_web_search` when web search is enabled |
+| `Where am I?` | `run_location` when coordinates are available |
+| `Find nearby restaurants` | `run_location` |
+| `Summarize this uploaded PDF` | `run_pdf_analysis` when PDF data is provided |
+| `Process my unread Gmail inbox messages` | `run_gmail_inbox` |
+| `Generate a PDF report about AI` | `call_model` -> `tools` |
+| `Introduce yourself, calculate these expressions, create a PDF report` | `execute_workflow` |
 
 ---
 
 ## Development
 
 ```bash
-# Run unit tests
+# Unit tests
 uv run pytest tests/unit_tests/ -v
 
-# Verify graph loads and list nodes
+# Integration tests
+uv run pytest tests/integration_tests/ -v
+
+# All tests
+uv run pytest
+
+# Verify graph imports
 uv run python -c "from agent import graph; print(list(graph.get_graph().nodes.keys()))"
 
-# Lint (optional)
-uv run ruff check src/
+# Lint
+uv run ruff check src tests
+
+# React build
+cd frontend
+npm run build
 ```
 
 Expected graph nodes:
 
-```
+```text
 prepare_input, decision_agent, execute_workflow, run_calculator,
 run_email, run_gmail_inbox, math_and_email, run_web_search, run_file_search,
-call_model, tools
+run_location, run_pdf_analysis, call_model, tools
 ```
 
 ---
 
-## Documentation
+## Deployment Notes
 
-| Document | Contents |
-|----------|----------|
-| [AgentWorkflow.md](./AgentWorkflow.md) | Mermaid diagrams, routing logic, example flows |
-| [SETUP_GUIDE.md](./SETUP_GUIDE.md) | Detailed setup and troubleshooting |
-| [docs/PROJECT_STRUCTURE.md](./docs/PROJECT_STRUCTURE.md) | Full directory layout |
-| [docs/GITHUB_SETUP.md](./docs/GITHUB_SETUP.md) | How to publish to GitHub |
-
----
-
-## Publish to GitHub
-
-
-```bash
-git init
-git add .
-git commit -m "Initial commit: Andromeda multi-tool LangGraph agent"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/andromeda-agent.git
-git push -u origin main
-```
-
-Step-by-step guide: **[docs/GITHUB_SETUP.md](./docs/GITHUB_SETUP.md)**
+- [langgraph.json](./langgraph.json) registers the graph as `agent` and configures permissive CORS for local, Studio, and deployed frontend use.
+- [Dockerfile](./Dockerfile) is based on `langchain/langgraph-api:3.12` and exposes the LangGraph API service.
+- [railway.json](./railway.json) configures Railway to build from the Dockerfile.
+- [vercel.json](./vercel.json) builds the React frontend from `frontend/` and serves the Vite output.
+- The frontend defaults to `/api`; add a rewrite/proxy to your backend if deploying separately.
 
 ---
 
-## Author
+## Security Notes
 
-**Muhammad Qasim Shabbir**  
-Email: [muhammadqasimshabbir3@gmail.com](mailto:muhammadqasimshabbir3@gmail.com)
+- Do not commit `.env`, Gmail OAuth client secrets, Gmail token files, or app passwords.
+- Use a Gmail App Password only for the legacy SMTP helper.
+- Use Gmail OAuth for inbox reading and in-thread replies.
+- OpenStreetMap services are public; set a meaningful `OSM_USER_AGENT` for production use.
+- Uploaded PDF indexes are in-memory and process-local.
 
 ---
 
 ## License
 
-This project is licensed under the **MIT License** — see [LICENSE](./LICENSE).
+This project is licensed under the **MIT License**. See [LICENSE](./LICENSE).
