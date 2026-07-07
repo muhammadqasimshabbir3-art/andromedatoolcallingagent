@@ -39,6 +39,8 @@ export interface AgentState {
   messages?: Array<{ content?: string; type?: string; tool_calls?: any[] }>;
   user_input?: string;
   web_search_enabled?: boolean;
+  user_latitude?: number;
+  user_longitude?: number;
 }
 
 export interface VideoMetadata {
@@ -64,6 +66,8 @@ export interface LogEntry {
 export interface RunRequest {
   user_input: string;
   web_search_enabled: boolean;
+  user_latitude: number;
+  user_longitude: number;
 }
 
 export type AgentRunSettings = Omit<RunRequest, never>;

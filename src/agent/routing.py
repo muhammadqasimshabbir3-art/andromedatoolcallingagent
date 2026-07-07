@@ -13,6 +13,12 @@ from agent.custom_tools.calculator_tools import (
     extract_math_expressions,
     solve_math_batch,
 )
+from agent.custom_tools.location_tools import (
+    location_fallback_response as _location_fallback,
+)
+from agent.custom_tools.location_tools import (
+    wants_location as _wants_location,
+)
 
 EMAIL_KEYWORDS = (
     "email",
@@ -116,6 +122,11 @@ def wants_email(text: str) -> bool:
         return False
     lowered = text.lower()
     return any(keyword in lowered for keyword in EMAIL_KEYWORDS)
+
+
+def wants_location(text: str) -> bool:
+    """Detect whether the user wants location or nearby-place help."""
+    return _wants_location(text)
 
 
 def extract_math_expression(text: str) -> str:
@@ -267,3 +278,13 @@ def math_fallback_response(user_text: str) -> AIMessage:
         summary = f"{expression} = {result_line}"
 
     return AIMessage(content=summary)
+
+
+def location_response(
+    user_text: str,
+    latitude: float = 0.0,
+    longitude: float = 0.0,
+) -> AIMessage:
+    """Return reverse-geocoded address and nearby places."""
+    result = _location_fallback(user_text, latitude, longitude)
+    return AIMessage(content=result)

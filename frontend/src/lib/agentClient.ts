@@ -84,6 +84,8 @@ export async function runAgentChat(
     input: {
       user_input: request.user_input.trim(),
       web_search_enabled: request.web_search_enabled,
+      user_latitude: request.user_latitude ?? 0,
+      user_longitude: request.user_longitude ?? 0,
       messages: [],
     },
     config: GRAPH_RUN_CONFIG,

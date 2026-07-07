@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 
 from agent.custom_tools.calculator_tools import extract_math_expressions
 from agent.report_planning import extract_report_topic, infer_report_aspects
-from agent.routing import is_math_query, wants_gmail_inbox_reply
+from agent.routing import is_math_query, wants_gmail_inbox_reply, wants_location
 
 INTRO_KEYWORDS = (
     "introduce yourself",
@@ -192,6 +192,11 @@ def needs_web_search(user_text: str) -> bool:
             return True
 
     return False
+
+
+def needs_location(user_text: str) -> bool:
+    """Return True when the user query is location-related."""
+    return wants_location(user_text)
 
 
 def needs_file_search(user_text: str) -> bool:

@@ -8,6 +8,7 @@ from agent.custom_tools.gmail_inbox_tools import (
     reply_to_gmail_message,
 )
 from agent.custom_tools.file_search_tools import search_files
+from agent.custom_tools.location_tools import get_live_location
 from agent.custom_tools.pdf_generator import generate_pdf_report, generate_table_report
 from agent.custom_tools.web_search_tools import web_search
 
@@ -19,6 +20,7 @@ __all__ = [
     "reply_to_gmail_message",
     "web_search",
     "search_files",
+    "get_live_location",
     "generate_pdf_report",
     "generate_table_report",
 ]

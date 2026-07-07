@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import os
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NotRequired
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_groq import ChatGroq
-from langgraph.graph import StateGraph, START, END
+from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from agent.async_utils import run_in_thread
 from agent.custom_tools.calculator_tools import (
@@ -30,12 +30,18 @@ from agent.routing import (
     gmail_inbox_fallback_response,
     is_empty_ai_message,
     is_math_query,
+    location_response,
     math_fallback_response,
     wants_email,
     wants_gmail_inbox_reply,
     web_search_response,
 )
-from agent.task_planner import needs_file_search, plan_tasks, should_use_web_search
+from agent.task_planner import (
+    needs_file_search,
+    needs_location,
+    plan_tasks,
+    should_use_web_search,
+)
 from agent.workflow_executor import execute_task_plan
 
 load_dotenv()
@@ -61,6 +67,7 @@ AgentRoute = Literal[
     "math_and_email",
     "run_web_search",
     "run_file_search",
+    "run_location",
     "call_model",
 ]
 
@@ -73,6 +80,8 @@ class State(TypedDict):
     web_search_enabled: NotRequired[bool]
     task_plan_summary: NotRequired[str]
     agent_route: NotRequired[AgentRoute]
+    user_latitude: NotRequired[float]
+    user_longitude: NotRequired[float]
 
 
 _model_instance = None
@@ -169,6 +178,9 @@ def _pick_route(
 
     if should_use_web_search(user_text, web_search_enabled):
         return "run_web_search"
+
+    if needs_location(user_text):
+        return "run_location"
 
     if needs_file_search(user_text):
         return "run_file_search"
@@ -278,6 +290,16 @@ async def run_file_search(state: State) -> dict[str, Any]:
     return {"messages": [response]}
 
 
+async def run_location(state: State) -> dict[str, Any]:
+    """Reverse-geocode coordinates and search nearby places."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    latitude = float(state.get("user_latitude", 0.0) or 0.0)
+    longitude = float(state.get("user_longitude", 0.0) or 0.0)
+    response = await run_in_thread(location_response, user_text, latitude, longitude)
+    return {"messages": [response]}
+
+
 async def call_model(state: State) -> dict[str, Any]:
     """LLM path for general chat and dynamic tool selection."""
     messages, _ = _prepare_messages(state)
@@ -352,6 +374,7 @@ graph_builder.add_node("run_gmail_inbox", run_gmail_inbox)
 graph_builder.add_node("math_and_email", math_and_email)
 graph_builder.add_node("run_web_search", run_web_search)
 graph_builder.add_node("run_file_search", run_file_search)
+graph_builder.add_node("run_location", run_location)
 graph_builder.add_node("call_model", call_model)
 graph_builder.add_node("tools", tool_node)
 
@@ -368,6 +391,7 @@ graph_builder.add_conditional_edges(
         "math_and_email": "math_and_email",
         "run_web_search": "run_web_search",
         "run_file_search": "run_file_search",
+        "run_location": "run_location",
         "call_model": "call_model",
     },
 )
@@ -378,6 +402,7 @@ graph_builder.add_edge("run_gmail_inbox", END)
 graph_builder.add_edge("math_and_email", END)
 graph_builder.add_edge("run_web_search", END)
 graph_builder.add_edge("run_file_search", END)
+graph_builder.add_edge("run_location", END)
 graph_builder.add_conditional_edges("call_model", route_after_model)
 graph_builder.add_edge("tools", "call_model")
 
