@@ -16,7 +16,10 @@ export function loadRunSettings(): AgentRunSettings {
 }
 
 export function saveRunSettings(settings: AgentRunSettings): void {
-  const raw = JSON.stringify(settings);
+  // PDF payloads can be large; keep them in React state for follow-up questions
+  // during the current session instead of persisting them to browser storage.
+  const { pdf_data_base64: _pdfData, ...storedSettings } = settings;
+  const raw = JSON.stringify(storedSettings);
   try {
     localStorage.setItem(STORAGE_KEY, raw);
     sessionStorage.setItem(STORAGE_KEY, raw);

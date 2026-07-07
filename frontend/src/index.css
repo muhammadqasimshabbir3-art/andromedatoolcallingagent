@@ -246,6 +246,39 @@ select {
   margin-top: 0.65rem;
 }
 
+.pdf-upload-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr);
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.pdf-file-status {
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.3rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(91, 157, 255, 0.08);
+}
+
+.pdf-file-status strong {
+  max-width: 100%;
+  color: var(--text);
+  font-size: 0.88rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pdf-file-status small {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
 .toggle-grid.compact {
   grid-template-columns: repeat(3, 1fr);
 }

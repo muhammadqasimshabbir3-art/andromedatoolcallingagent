@@ -52,6 +52,7 @@ export function useAgentRun() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [threadId, setThreadId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [conversationMessages, setConversationMessages] = useState<Array<{ type: "human" | "ai"; content: string }>>([]);
 
   const pushLog = useCallback((level: LogEntry["level"], message: string) => {
     setLogs((prev) => [
@@ -85,7 +86,11 @@ export function useAgentRun() {
     );
 
     // Auto-detect browser location for location-related queries
-    let finalRequest = { ...request };
+    const currentUserMessage = { type: "human" as const, content: request.user_input.trim() };
+    let finalRequest: RunRequest = {
+      ...request,
+      conversation_messages: [...conversationMessages, currentUserMessage],
+    };
     if (isLocationQuery(request.user_input)) {
       pushLog("info", "📍 Detecting your location...");
       try {
@@ -123,6 +128,11 @@ export function useAgentRun() {
 
       // Update result state with the text returned
       setResult({ task_plan_summary: response } as AgentState);
+      setConversationMessages((prev) => [
+        ...prev,
+        currentUserMessage,
+        { type: "ai", content: response },
+      ]);
 
       // Mark all steps completed
       setSteps((prev) =>
@@ -141,7 +151,7 @@ export function useAgentRun() {
     } finally {
       setRunning(false);
     }
-  }, [pushLog]);
+  }, [conversationMessages, pushLog]);
 
   const cancel = useCallback(() => {
     if (running) {
@@ -159,6 +169,7 @@ export function useAgentRun() {
     setLogs([]);
     setThreadId(null);
     setRunId(null);
+    setConversationMessages([]);
   }, []);
 
   return {

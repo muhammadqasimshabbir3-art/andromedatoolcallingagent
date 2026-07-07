@@ -9,6 +9,7 @@ from agent.custom_tools.location_tools import (
     wants_location,
 )
 from agent.graph import _pick_route
+from agent.routing import is_math_query, pick_tool_choice
 
 
 def test_location_intent_detection() -> None:
@@ -16,6 +17,7 @@ def test_location_intent_detection() -> None:
     assert wants_location("Nearby hospitals")
     assert wants_location("Find petrol pumps near me")
     assert not wants_location("Calculate 2 + 2")
+    assert not is_math_query("Find nearby restaurants open 24/7")
 
 
 def test_extract_supported_place_types() -> None:
@@ -111,3 +113,15 @@ def test_graph_routes_location_queries_to_location_node() -> None:
         [HumanMessage(content="Nearby pharmacies")],
     )
     assert route == "run_location"
+
+
+def test_location_route_wins_over_math_like_text() -> None:
+    text = "Find nearby restaurants open 24/7"
+
+    route = _pick_route(text, [HumanMessage(content=text)])
+
+    assert route == "run_location"
+    assert pick_tool_choice(text) == {
+        "type": "function",
+        "function": {"name": "get_live_location"},
+    }
