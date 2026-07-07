@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 
 from agent.custom_tools.calculator_tools import extract_math_expressions
 from agent.report_planning import extract_report_topic, infer_report_aspects
-from agent.routing import is_math_query, wants_gmail_inbox_reply, wants_location
+from agent.routing import (
+    is_math_query,
+    wants_email,
+    wants_gmail_inbox_reply,
+    wants_location,
+)
 
 INTRO_KEYWORDS = (
     "introduce yourself",
@@ -105,10 +110,12 @@ class TaskPlan:
 
     @property
     def is_multi_task(self) -> bool:
+        """Return True when the plan contains multiple workflow tasks."""
         workflow_tasks = [t for t in self.tasks if t != "web_search"]
         return len(workflow_tasks) >= 2
 
     def summary(self) -> str:
+        """Return a readable summary of the planned workflow."""
         labels = {
             "introduce": "Introduce myself",
             "calculate_math": f"Calculate {len(self.math_expressions)} expression(s)",
@@ -127,6 +134,7 @@ class TaskPlan:
 
 
 def wants_introduction(text: str) -> bool:
+    """Return True when the user asks the agent to introduce itself."""
     lowered = text.lower()
     return any(keyword in lowered for keyword in INTRO_KEYWORDS)
 
@@ -153,6 +161,7 @@ def wants_web_research_for_report(user_text: str, web_search_enabled: bool) -> b
 
 
 def wants_pdf(text: str) -> bool:
+    """Return True when the user asks for a generated PDF/report file."""
     lowered = text.lower()
     return any(keyword in lowered for keyword in PDF_KEYWORDS)
 
@@ -272,8 +281,8 @@ def plan_tasks(user_text: str, web_search_enabled: bool = False) -> TaskPlan:
     if wants_gmail_inbox_reply(user_text):
         return plan
 
-    # SMTP email workflow disabled: Gmail API inbox operations are handled
-    # through dedicated routing/tools rather than report-email tasks.
+    if wants_email(user_text):
+        plan.tasks.append("send_email")
 
     if should_use_web_search(user_text, web_search_enabled):
         from agent.custom_tools.web_search_tools import extract_search_query
@@ -289,5 +298,5 @@ def plan_tasks(user_text: str, web_search_enabled: bool = False) -> TaskPlan:
 
 
 def is_multi_task_request(user_text: str, web_search_enabled: bool = False) -> bool:
-    """True when the query needs the multi-step workflow executor."""
+    """Return True when the query needs the multi-step workflow executor."""
     return plan_tasks(user_text, web_search_enabled).is_multi_task

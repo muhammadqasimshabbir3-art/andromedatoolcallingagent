@@ -19,6 +19,9 @@ export function defaultRunSettings(): AgentRunSettings {
     web_search_enabled: envBool("VITE_DEFAULT_WEB_SEARCH", false),
     user_latitude: 0,
     user_longitude: 0,
+    pdf_analysis_enabled: false,
+    pdf_data_base64: "",
+    pdf_filename: "",
+    pdf_summarize_only: false,
   };
 }
-

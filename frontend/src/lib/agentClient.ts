@@ -86,7 +86,12 @@ export async function runAgentChat(
       web_search_enabled: request.web_search_enabled,
       user_latitude: request.user_latitude ?? 0,
       user_longitude: request.user_longitude ?? 0,
-      messages: [],
+      ...(request.pdf_analysis_enabled && request.pdf_data_base64 ? {
+        pdf_data_base64: request.pdf_data_base64,
+        pdf_filename: request.pdf_filename || "uploaded.pdf",
+        pdf_summarize_only: Boolean(request.pdf_summarize_only),
+      } : {}),
+      messages: request.conversation_messages ?? [],
     },
     config: GRAPH_RUN_CONFIG,
     streamMode: ["updates", "values"],

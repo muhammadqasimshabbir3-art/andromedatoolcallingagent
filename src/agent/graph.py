@@ -23,7 +23,9 @@ from agent.custom_tools.gmail_inbox_tools import (
     read_unread_gmail,
     reply_to_gmail_message,
 )
+from agent.custom_tools.location_tools import get_live_location
 from agent.custom_tools.pdf_generator import generate_pdf_report, generate_table_report
+from agent.pdf_analysis import pdf_analysis_response
 from agent.routing import (
     file_search_response,
     get_latest_user_text,
@@ -52,6 +54,7 @@ SYSTEM_PROMPT = (
     "You have access to the full conversation history — use prior messages for context "
     "when the user refers to earlier results (e.g. 'email that', 'explain that', 'what did I ask'). "
     "For math, use calculator tools. For PDFs use generate_pdf_report. "
+    "For location and nearby-place requests, use the live location tools. "
     "Use Gmail API tools only (no SMTP). "
     "You can read unread Gmail emails, summarize contents, and reply in-thread. "
     "File search and web search run through dedicated graph nodes when detected."
@@ -68,6 +71,7 @@ AgentRoute = Literal[
     "run_web_search",
     "run_file_search",
     "run_location",
+    "run_pdf_analysis",
     "call_model",
 ]
 
@@ -82,6 +86,9 @@ class State(TypedDict):
     agent_route: NotRequired[AgentRoute]
     user_latitude: NotRequired[float]
     user_longitude: NotRequired[float]
+    pdf_data_base64: NotRequired[str]
+    pdf_filename: NotRequired[str]
+    pdf_summarize_only: NotRequired[bool]
 
 
 _model_instance = None
@@ -105,6 +112,7 @@ def _init_model():
 
 
 def get_model():
+    """Return the shared chat model instance."""
     return _init_model()
 
 
@@ -112,6 +120,7 @@ def get_model():
 llm_tools = [
     casio_calculator,
     solve_math_batch_tool,
+    get_live_location,
     generate_pdf_report,
     generate_table_report,
     read_unread_gmail,
@@ -167,6 +176,9 @@ def _pick_route(
     if task_plan.is_multi_task:
         return "execute_workflow"
 
+    if needs_location(user_text):
+        return "run_location"
+
     if is_math_query(user_text) and wants_email(user_text):
         return "math_and_email"
 
@@ -178,9 +190,6 @@ def _pick_route(
 
     if should_use_web_search(user_text, web_search_enabled):
         return "run_web_search"
-
-    if needs_location(user_text):
-        return "run_location"
 
     if needs_file_search(user_text):
         return "run_file_search"
@@ -202,7 +211,10 @@ async def decision_agent(state: State) -> dict[str, Any]:
     user_text = get_latest_user_text(messages)
     web_search_enabled = bool(state.get("web_search_enabled", False))
     task_plan = plan_tasks(user_text, web_search_enabled)
-    route = _pick_route(user_text, messages, web_search_enabled)
+    if state.get("pdf_data_base64"):
+        route = "run_pdf_analysis"
+    else:
+        route = _pick_route(user_text, messages, web_search_enabled)
 
     if task_plan.use_web_search or task_plan.use_file_search or task_plan.tasks:
         summary = task_plan.summary()
@@ -300,6 +312,19 @@ async def run_location(state: State) -> dict[str, Any]:
     return {"messages": [response]}
 
 
+async def run_pdf_analysis(state: State) -> dict[str, Any]:
+    """Analyze the uploaded PDF, then answer PDF-grounded questions."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    response = await pdf_analysis_response(
+        question=user_text,
+        pdf_data_base64=state.get("pdf_data_base64", ""),
+        pdf_filename=state.get("pdf_filename", "uploaded.pdf"),
+        summarize_only=bool(state.get("pdf_summarize_only", False)),
+    )
+    return {"messages": [response]}
+
+
 async def call_model(state: State) -> dict[str, Any]:
     """LLM path for general chat and dynamic tool selection."""
     messages, _ = _prepare_messages(state)
@@ -375,6 +400,7 @@ graph_builder.add_node("math_and_email", math_and_email)
 graph_builder.add_node("run_web_search", run_web_search)
 graph_builder.add_node("run_file_search", run_file_search)
 graph_builder.add_node("run_location", run_location)
+graph_builder.add_node("run_pdf_analysis", run_pdf_analysis)
 graph_builder.add_node("call_model", call_model)
 graph_builder.add_node("tools", tool_node)
 
@@ -392,6 +418,7 @@ graph_builder.add_conditional_edges(
         "run_web_search": "run_web_search",
         "run_file_search": "run_file_search",
         "run_location": "run_location",
+        "run_pdf_analysis": "run_pdf_analysis",
         "call_model": "call_model",
     },
 )
@@ -403,6 +430,7 @@ graph_builder.add_edge("math_and_email", END)
 graph_builder.add_edge("run_web_search", END)
 graph_builder.add_edge("run_file_search", END)
 graph_builder.add_edge("run_location", END)
+graph_builder.add_edge("run_pdf_analysis", END)
 graph_builder.add_conditional_edges("call_model", route_after_model)
 graph_builder.add_edge("tools", "call_model")
 

@@ -77,11 +77,17 @@ def is_math_query(text: str) -> bool:
     if not text.strip():
         return False
 
+    if wants_location(text):
+        return False
+
     lowered = text.lower()
+    expressions = extract_math_expressions(text)
+    if expressions:
+        return True
+
     math_words = (
         "calculate",
         "evaluate",
-        "solve",
         "factorial",
         "sqrt",
         "log(",
@@ -93,6 +99,8 @@ def is_math_query(text: str) -> bool:
         "complex",
     )
     if any(word in lowered for word in math_words):
+        return True
+    if re.search(r"(?i)\bsolve\b", text) and re.search(r"[0-9a-z]\s*=", text):
         return True
     if re.search(r"\d\s*[\+\-\*/\^\%]", text):
         return True
@@ -153,6 +161,9 @@ def is_empty_ai_message(response: AIMessage) -> bool:
 
 def pick_tool_choice(user_text: str) -> dict[str, object] | None:
     """Pick a forced tool when intent is clear."""
+    if wants_location(user_text):
+        return {"type": "function", "function": {"name": "get_live_location"}}
+
     if is_math_query(user_text):
         tool_name = (
             "solve_math_batch_tool"

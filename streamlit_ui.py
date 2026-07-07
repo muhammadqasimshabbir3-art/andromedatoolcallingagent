@@ -7,6 +7,7 @@ Run with: streamlit run streamlit_ui.py
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime
 
 import streamlit as st
@@ -31,6 +32,10 @@ def init_session_state() -> None:
         "user_latitude": 0.0,
         "user_longitude": 0.0,
         "location_permission_denied": False,
+        "pdf_data_base64": "",
+        "pdf_filename": "",
+        "pdf_file_signature": "",
+        "pdf_analysis_enabled": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -172,7 +177,7 @@ def format_message(message) -> str:
     return str(message)
 
 
-def process_user_message(user_text: str) -> None:
+def process_user_message(user_text: str, pdf_summarize_only: bool = False) -> None:
     """Send user message to the agent and append the response to history."""
     user_text = user_text.strip()
     if not user_text:
@@ -204,6 +209,14 @@ def process_user_message(user_text: str) -> None:
                 "user_latitude": st.session_state.user_latitude,
                 "user_longitude": st.session_state.user_longitude,
             }
+            if st.session_state.pdf_analysis_enabled and st.session_state.pdf_data_base64:
+                inputs.update(
+                    {
+                        "pdf_data_base64": st.session_state.pdf_data_base64,
+                        "pdf_filename": st.session_state.pdf_filename or "uploaded.pdf",
+                        "pdf_summarize_only": pdf_summarize_only,
+                    }
+                )
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -274,6 +287,22 @@ def display_sidebar() -> None:
             st.session_state.location_permission_denied = False
             st.rerun()
 
+        if st.session_state.pdf_filename:
+            st.divider()
+            st.subheader("PDF Analysis")
+            st.caption(f"Loaded: {st.session_state.pdf_filename}")
+            st.session_state.pdf_analysis_enabled = st.toggle(
+                "Ask uploaded PDF",
+                value=st.session_state.pdf_analysis_enabled,
+                help="When enabled, messages are answered only from the uploaded PDF.",
+            )
+            if st.button("Clear uploaded PDF", use_container_width=True):
+                st.session_state.pdf_data_base64 = ""
+                st.session_state.pdf_filename = ""
+                st.session_state.pdf_file_signature = ""
+                st.session_state.pdf_analysis_enabled = False
+                st.rerun()
+
         st.divider()
 
         st.subheader("Agent Capabilities")
@@ -282,6 +311,7 @@ def display_sidebar() -> None:
             "🔍 Web Search (toggle below input bar)",
             "🗂️ File Search",
             "📄 PDF Generation",
+            "📑 PDF Analysis with RAG",
             "📧 Email Reports (Gmail SMTP)",
             "💬 Multi-turn conversation memory",
         ):
@@ -309,7 +339,7 @@ def display_sidebar() -> None:
 
 
 def main() -> None:
-    """Main Streamlit app."""
+    """Run the main Streamlit app."""
     import os
 
     st.set_page_config(
@@ -334,6 +364,33 @@ def main() -> None:
         )
 
     st.divider()
+
+    with st.expander("📑 Upload PDF for Analysis", expanded=not bool(st.session_state.pdf_filename)):
+        uploaded_pdf = st.file_uploader(
+            "Upload a PDF",
+            type=["pdf"],
+            accept_multiple_files=False,
+            help="The agent extracts text, builds a Chroma vector index, summarizes the document, and answers follow-up questions only from the PDF.",
+        )
+        if uploaded_pdf is not None:
+            pdf_bytes = uploaded_pdf.getvalue()
+            signature = f"{uploaded_pdf.name}:{len(pdf_bytes)}"
+            if signature != st.session_state.pdf_file_signature:
+                st.session_state.pdf_data_base64 = base64.b64encode(pdf_bytes).decode("ascii")
+                st.session_state.pdf_filename = uploaded_pdf.name
+                st.session_state.pdf_file_signature = signature
+                st.session_state.pdf_analysis_enabled = True
+                process_user_message(
+                    f"Summarize the uploaded PDF named {uploaded_pdf.name}.",
+                    pdf_summarize_only=True,
+                )
+                st.rerun()
+
+        if st.session_state.pdf_filename:
+            st.success(f"PDF ready: {st.session_state.pdf_filename}")
+            st.caption(
+                "Ask follow-up questions in chat while 'Ask uploaded PDF' is enabled in the sidebar."
+            )
 
     # --- Conversation history ---
     if not st.session_state.messages:

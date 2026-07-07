@@ -41,6 +41,8 @@ export interface AgentState {
   web_search_enabled?: boolean;
   user_latitude?: number;
   user_longitude?: number;
+  pdf_filename?: string;
+  pdf_summarize_only?: boolean;
 }
 
 export interface VideoMetadata {
@@ -68,6 +70,11 @@ export interface RunRequest {
   web_search_enabled: boolean;
   user_latitude: number;
   user_longitude: number;
+  pdf_analysis_enabled?: boolean;
+  pdf_data_base64?: string;
+  pdf_filename?: string;
+  pdf_summarize_only?: boolean;
+  conversation_messages?: Array<{ type: "human" | "ai"; content: string }>;
 }
 
 export type AgentRunSettings = Omit<RunRequest, never>;
