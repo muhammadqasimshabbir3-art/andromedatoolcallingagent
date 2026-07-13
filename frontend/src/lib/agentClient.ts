@@ -3,7 +3,6 @@ import { ASSISTANT_ID, LANGSMITH_API_KEY, LANGGRAPH_API_URL, GRAPH_RUN_CONFIG } 
 import type { RunRequest } from "../types";
 
 function resolveApiUrlForSdk(apiUrl: string): string {
-  // LangGraph SDK expects an absolute URL. In local/dev-proxy mode we may have "/api".
   if (apiUrl.startsWith("/")) {
     return new URL(apiUrl, window.location.origin).toString().replace(/\/$/, "");
   }
@@ -15,10 +14,9 @@ export function healthCheckUrl(): string {
 }
 
 /** Shared SDK client — re-used across calls. */
-function getClient(): Client {
+export function getAgentClient(): Client {
   return new Client({
     apiUrl: resolveApiUrlForSdk(LANGGRAPH_API_URL),
-    // apiKey is sent as x-api-key; omit if empty so open deployments work too
     ...(LANGSMITH_API_KEY ? { apiKey: LANGSMITH_API_KEY } : {}),
   });
 }
@@ -28,16 +26,12 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
   const start = performance.now();
   const elapsed = () => Math.round(performance.now() - start);
 
-  // Prefer /ok — fast, no auth, matches LangGraph health endpoint.
-  // However a static frontend can return index.html at /api/ok (HTTP 200 HTML),
-  // which would incorrectly indicate the backend is healthy. We require a
-  // JSON response with { ok: true } to consider the health check successful.
   try {
     const res = await fetch(healthCheckUrl(), {
       method: "GET",
       credentials: "include",
       headers: {
-        "Accept": "application/json",
+        Accept: "application/json",
       },
     });
     if (res.ok) {
@@ -47,9 +41,8 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
           const body = await res.json();
           if (body && body.ok === true) return { ok: true, latencyMs: elapsed() };
         }
-        // Otherwise treat as not a real health response and fall through.
       } catch {
-        // JSON parse failed - likely HTML index page. Fall through to SDK check.
+        // JSON parse failed — likely HTML index page.
       }
     }
   } catch {
@@ -57,7 +50,7 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
   }
 
   try {
-    const client = getClient();
+    const client = getAgentClient();
     await client.assistants.search({ limit: 1 });
     return { ok: true, latencyMs: elapsed() };
   } catch {
@@ -65,59 +58,94 @@ export async function checkAgentHealth(): Promise<{ ok: boolean; latencyMs: numb
   }
 }
 
-/**
- * Create a thread, stream a run, and return the final AI response text.
- * Uses the official LangGraph SDK which handles auth + SSE correctly.
- */
-export async function runAgentChat(
-  request: RunRequest,
-  onChunk?: (event: string, data: unknown) => void,
-): Promise<{ threadId: string; response: string }> {
-  const client = getClient();
-
-  // 1. Create thread
-  const thread = await client.threads.create();
-  const threadId = thread.thread_id;
-
-  // 2. Stream the run
-  const stream = client.runs.stream(threadId, ASSISTANT_ID, {
-    input: {
-      user_input: request.user_input.trim(),
-      web_search_enabled: request.web_search_enabled,
-      user_latitude: request.user_latitude ?? 0,
-      user_longitude: request.user_longitude ?? 0,
-      ...(request.pdf_analysis_enabled && request.pdf_data_base64 ? {
-        pdf_data_base64: request.pdf_data_base64,
-        pdf_filename: request.pdf_filename || "uploaded.pdf",
-        pdf_summarize_only: Boolean(request.pdf_summarize_only),
-      } : {}),
-      messages: request.conversation_messages ?? [],
-    },
-    config: GRAPH_RUN_CONFIG,
-    streamMode: ["updates", "values"],
-  });
-
-  let lastMessages: Array<{ content?: string; type?: string }> = [];
-
-  for await (const chunk of stream) {
-    const { event, data } = chunk as { event: string; data: unknown };
-    onChunk?.(event, data);
-
-    if (event === "values" && data && typeof data === "object") {
-      const vals = data as Record<string, unknown>;
-      if (Array.isArray(vals.messages)) {
-        lastMessages = vals.messages as Array<{ content?: string; type?: string }>;
-      }
-    }
-  }
-
-  // 3. Extract last AI message
-  const lastAI = [...lastMessages]
-    .reverse()
-    .find((m) => m.type === "ai" || m.type === "AIMessage");
-
+export function buildAgentInput(request: RunRequest) {
   return {
-    threadId,
-    response: (lastAI?.content as string | undefined) ?? "Agent completed.",
+    user_input: request.user_input.trim(),
+    web_search_enabled: request.web_search_enabled,
+    user_latitude: request.user_latitude ?? 0,
+    user_longitude: request.user_longitude ?? 0,
+    ...(request.pdf_analysis_enabled && request.pdf_data_base64
+      ? {
+          pdf_data_base64: request.pdf_data_base64,
+          pdf_filename: request.pdf_filename || "uploaded.pdf",
+          pdf_summarize_only: Boolean(request.pdf_summarize_only),
+        }
+      : {}),
+    messages: request.conversation_messages ?? [],
   };
+}
+
+export async function fetchThreadState(threadId: string) {
+  return getAgentClient().threads.getState(threadId);
+}
+
+export async function fetchRun(threadId: string, runId: string) {
+  return getAgentClient().runs.get(threadId, runId);
+}
+
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+
+export async function fetchLatestActiveRun(threadId: string): Promise<string | null> {
+  try {
+    const runs = await getAgentClient().runs.list(threadId, { limit: 10 });
+    const active = runs.find((run) => ACTIVE_RUN_STATUSES.has(run.status));
+    return active?.run_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function isRunStillActive(threadId: string, runId: string | null): Promise<boolean> {
+  try {
+    const thread = await fetchThreadState(threadId);
+    if ((thread.next?.length ?? 0) > 0) return true;
+    let resolved = runId;
+    if (!resolved) {
+      resolved = await fetchLatestActiveRun(threadId);
+      if (!resolved) return false;
+    }
+    const run = await fetchRun(threadId, resolved);
+    return ACTIVE_RUN_STATUSES.has(run.status);
+  } catch {
+    return false;
+  }
+}
+
+export function joinRunStream(threadId: string, runId: string, signal?: AbortSignal) {
+  return getAgentClient().runs.joinStream(threadId, runId, {
+    streamMode: ["updates", "values", "events"],
+    cancelOnDisconnect: false,
+    signal,
+  });
+}
+
+/** Create a run first (captures run_id for reconnect), then join its stream. */
+export async function streamAgentRun(
+  request: RunRequest,
+  signal?: AbortSignal,
+) {
+  const client = getAgentClient();
+  const thread = await client.threads.create();
+  const input = buildAgentInput(request);
+  const run = await client.runs.create(thread.thread_id, ASSISTANT_ID, {
+    input,
+    config: GRAPH_RUN_CONFIG,
+    streamMode: ["updates", "values", "events"],
+    onDisconnect: "continue",
+  });
+  const stream = client.runs.joinStream(thread.thread_id, run.run_id, {
+    streamMode: ["updates", "values", "events"],
+    cancelOnDisconnect: false,
+    signal,
+  });
+  return { threadId: thread.thread_id, runId: run.run_id, stream };
+}
+
+export async function cancelAgentRun(threadId: string, runId: string | null): Promise<void> {
+  if (!runId) return;
+  try {
+    await getAgentClient().runs.cancel(threadId, runId);
+  } catch {
+    // Server may not support cancel; UI abort still stops local tracking.
+  }
 }

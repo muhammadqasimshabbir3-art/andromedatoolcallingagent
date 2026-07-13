@@ -1,9 +1,44 @@
-import { useCallback, useState } from "react";
-import { runAgentChat } from "../lib/agentClient";
-import { initialStepStates } from "../lib/workflowSteps";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import {
+  cancelAgentRun,
+  fetchLatestActiveRun,
+  fetchRun,
+  fetchThreadState,
+  isRunStillActive,
+  joinRunStream,
+  streamAgentRun,
+} from "../lib/agentClient";
+import {
+  clearRunSession,
+  loadRunSession,
+  saveRunSession,
+} from "../lib/runSession";
+import {
+  buildPipelineFromState,
+  finalizePipeline,
+  isChainEndEvent,
+  isChainStartEvent,
+  markStepCompleted,
+  markStepRunning,
+  normalizeNodeName,
+  normalizeStreamEvent,
+  parseEventNodeName,
+  parseEventNodeOutput,
+  payloadForNode,
+  startPipeline,
+  type ThreadSnapshot,
+} from "../lib/streamProgress";
+import {
+  detailForNode,
+  initialStepStates,
+  stepIdForNode,
+} from "../lib/workflowSteps";
 import type { AgentState, LogEntry, RunRequest, StepState } from "../types";
 
-/** Keywords that trigger automatic browser geolocation lookup. */
+const POLL_MS = 1000;
+const ACTIVE_RUN_STATUSES = new Set(["pending", "running"]);
+
 const LOCATION_TRIGGERS = [
   "where am i",
   "my location",
@@ -43,126 +78,159 @@ function getBrowserLocation(): Promise<{ lat: number; lng: number }> {
   });
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function makeLog(level: LogEntry["level"], message: string): LogEntry {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    time: new Date().toLocaleTimeString(),
+    level,
+    message,
+  };
+}
+
+function extractAiText(state: AgentState | null): string {
+  const messages = state?.messages ?? [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    const type = (msg.type ?? "").toLowerCase();
+    if (type === "ai" || type === "aimessage" || type.includes("ai")) {
+      if (typeof msg.content === "string" && msg.content.trim()) return msg.content;
+    }
+  }
+  return state?.task_plan_summary ?? "Agent completed.";
+}
+
+function hydrateFromSession() {
+  const session = loadRunSession();
+  if (!session?.threadId) {
+    return {
+      steps: initialStepStates(),
+      result: null as AgentState | null,
+      running: false,
+      threadId: null as string | null,
+      runId: null as string | null,
+      reconnected: false,
+    };
+  }
+  return {
+    steps: session.steps?.length ? session.steps : initialStepStates(),
+    result: session.partialState ?? null,
+    running: Boolean(session.running),
+    threadId: session.threadId,
+    runId: session.runId,
+    reconnected: Boolean(session.reconnected),
+  };
+}
+
+function publishSteps(setSteps: (s: StepState[]) => void, next: StepState[]) {
+  flushSync(() => setSteps(next));
+}
+
+async function resolveRunId(threadId: string, runId: string | null): Promise<string | null> {
+  if (runId) return runId;
+  return fetchLatestActiveRun(threadId);
+}
+
 export function useAgentRun() {
-  const [running, setRunning] = useState(false);
-  const [reconnected, setReconnected] = useState(false);
-  const [steps, setSteps] = useState<StepState[]>(initialStepStates());
-  const [result, setResult] = useState<AgentState | null>(null);
+  const hydrated = hydrateFromSession();
+  const abortRef = useRef<AbortController | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const completedNodesRef = useRef<Set<string>>(new Set());
+  const trackingRef = useRef(hydrated.running);
+  const resumeLockRef = useRef(false);
+  const threadIdRef = useRef<string | null>(hydrated.threadId);
+  const runIdRef = useRef<string | null>(hydrated.runId);
+  const stepsLiveRef = useRef<StepState[]>(hydrated.steps);
+
+  const [running, setRunning] = useState(hydrated.running);
+  const [reconnected, setReconnected] = useState(hydrated.reconnected);
+  const [steps, setSteps] = useState<StepState[]>(hydrated.steps);
+  const [result, setResult] = useState<AgentState | null>(hydrated.result);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [threadId, setThreadId] = useState<string | null>(null);
-  const [runId, setRunId] = useState<string | null>(null);
-  const [conversationMessages, setConversationMessages] = useState<Array<{ type: "human" | "ai"; content: string }>>([]);
+  const [threadId, setThreadId] = useState<string | null>(hydrated.threadId);
+  const [runId, setRunId] = useState<string | null>(hydrated.runId);
+  const [conversationMessages, setConversationMessages] = useState<
+    Array<{ type: "human" | "ai"; content: string }>
+  >([]);
+
+  stepsLiveRef.current = steps;
+
+  const persistSession = useCallback(
+    (patch: {
+      threadId?: string | null;
+      runId?: string | null;
+      running?: boolean;
+      steps?: StepState[];
+      partialState?: AgentState | null;
+      reconnected?: boolean;
+    }) => {
+      const tid = patch.threadId ?? threadIdRef.current;
+      if (!tid) return;
+      const rid = patch.runId !== undefined ? patch.runId : runIdRef.current;
+      saveRunSession({
+        threadId: tid,
+        runId: rid,
+        startedAt: nowIso(),
+        running: patch.running ?? trackingRef.current,
+        steps: patch.steps ?? undefined,
+        partialState: patch.partialState ?? undefined,
+        reconnected: patch.reconnected ?? undefined,
+      });
+    },
+    [],
+  );
 
   const pushLog = useCallback((level: LogEntry["level"], message: string) => {
-    setLogs((prev) => [
-      ...prev,
-      {
-        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        time: new Date().toLocaleTimeString(),
-        level,
-        message,
-      },
-    ]);
+    flushSync(() => setLogs((prev) => [...prev, makeLog(level, message)]));
   }, []);
 
-  const run = useCallback(async (request: RunRequest) => {
-    if (!request.user_input?.trim()) {
-      setError("User input is required.");
-      return;
+  const stopPolling = useCallback(() => {
+    if (pollRef.current != null) {
+      window.clearInterval(pollRef.current);
+      pollRef.current = null;
     }
+  }, []);
 
-    setRunning(true);
-    setError(null);
-    setResult(null);
-    setLogs([]);
-    setReconnected(false);
-    setThreadId(null);
-    setRunId(null);
-
-    // Mark first step as running
-    setSteps((prev) =>
-      prev.map((s, i) => i === 0 ? { ...s, status: "running" } : { ...s, status: "pending" })
-    );
-
-    // Auto-detect browser location for location-related queries
-    const currentUserMessage = { type: "human" as const, content: request.user_input.trim() };
-    let finalRequest: RunRequest = {
-      ...request,
-      conversation_messages: [...conversationMessages, currentUserMessage],
-    };
-    if (isLocationQuery(request.user_input)) {
-      pushLog("info", "📍 Detecting your location...");
-      try {
-        const coords = await getBrowserLocation();
-        if (coords.lat !== 0 || coords.lng !== 0) {
-          finalRequest.user_latitude = coords.lat;
-          finalRequest.user_longitude = coords.lng;
-          pushLog("info", `📍 Location detected: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`);
-        } else {
-          pushLog("warn", "📍 Location unavailable — sending request without coordinates");
-        }
-      } catch {
-        pushLog("warn", "📍 Could not detect location");
-      }
-    }
-
-    pushLog("info", "🚀 Sending request to Andromeda agent...");
-
-    try {
-      const { threadId: tid, response } = await runAgentChat(
-        finalRequest,
-        (eventType, data) => {
-          // Live progress from SSE stream
-          if (eventType === "updates" && data && typeof data === "object") {
-            const upd = data as Record<string, unknown>;
-            const nodeName = Object.keys(upd)[0];
-            if (nodeName) {
-              pushLog("info", `⚙️ Node active: ${nodeName}`);
-            }
-          }
-        },
+  const publishFromState = useCallback(
+    (state: AgentState, nextNodes: string[], thread: ThreadSnapshot = {}) => {
+      const rebuilt = buildPipelineFromState(
+        state,
+        nextNodes,
+        thread,
+        completedNodesRef.current,
       );
-
-      setThreadId(tid);
-
-      // Update result state with the text returned
-      setResult({ task_plan_summary: response } as AgentState);
-      setConversationMessages((prev) => [
-        ...prev,
-        currentUserMessage,
-        { type: "ai", content: response },
-      ]);
-
-      // Mark all steps completed
-      setSteps((prev) =>
-        prev.map((s) => ({ ...s, status: "completed", detail: "Done" }))
-      );
-
-      pushLog("success", "✅ Agent request completed successfully!");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
-      pushLog("error", `❌ Error: ${message}`);
-
-      setSteps((prev) =>
-        prev.map((s) => s.status === "running" ? { ...s, status: "error", detail: message } : s)
-      );
-    } finally {
-      setRunning(false);
-    }
-  }, [conversationMessages, pushLog]);
-
-  const cancel = useCallback(() => {
-    if (running) {
-      setRunning(false);
-      pushLog("warn", "⏹️ Agent run stopped (UI only)");
-    }
-  }, [running, pushLog]);
+      completedNodesRef.current = rebuilt.completedNodes;
+      flushSync(() => setResult(state));
+      publishSteps(setSteps, rebuilt.steps);
+      persistSession({
+        steps: rebuilt.steps,
+        partialState: state,
+        running: trackingRef.current,
+      });
+      return rebuilt;
+    },
+    [persistSession],
+  );
 
   const reset = useCallback(() => {
-    setRunning(false);
+    abortRef.current?.abort();
+    abortRef.current = null;
+    stopPolling();
+    trackingRef.current = false;
+    completedNodesRef.current = new Set();
+    threadIdRef.current = null;
+    runIdRef.current = null;
+    clearRunSession();
     setReconnected(false);
+    setRunning(false);
     setSteps(initialStepStates());
     setResult(null);
     setError(null);
@@ -170,7 +238,546 @@ export function useAgentRun() {
     setThreadId(null);
     setRunId(null);
     setConversationMessages([]);
+  }, [stopPolling]);
+
+  const refreshThread = useCallback(
+    async (activeThreadId: string, latestState: AgentState = {}) => {
+      const thread = await fetchThreadState(activeThreadId);
+      const merged = { ...latestState, ...(thread.values as AgentState) } as AgentState;
+      const nextNodes = thread.next ?? [];
+      publishFromState(merged, nextNodes, thread as ThreadSnapshot);
+      return { state: merged, next: nextNodes, thread: thread as ThreadSnapshot };
+    },
+    [publishFromState],
+  );
+
+  const startPolling = useCallback(
+    (activeThreadId: string) => {
+      stopPolling();
+      pollRef.current = window.setInterval(() => {
+        if (!trackingRef.current) return;
+        void refreshThread(activeThreadId).catch(() => {
+          // thread may be gone
+        });
+      }, POLL_MS);
+    },
+    [refreshThread, stopPolling],
+  );
+
+  const finishRun = useCallback(
+    async (activeThreadId: string | null, activeRunId: string | null, finalState?: AgentState) => {
+      if (activeThreadId && (await isRunStillActive(activeThreadId, activeRunId))) {
+        persistSession({ threadId: activeThreadId, runId: activeRunId, running: true });
+        return false;
+      }
+      trackingRef.current = false;
+      stopPolling();
+      setRunning(false);
+      abortRef.current = null;
+
+      if (finalState) {
+        const finalized = finalizePipeline(
+          buildPipelineFromState(finalState, [], {}, completedNodesRef.current).steps,
+          finalState,
+          completedNodesRef.current,
+          [],
+          {},
+        );
+        publishSteps(setSteps, finalized);
+        setResult(finalState);
+        const aiText = extractAiText(finalState);
+        setConversationMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.type === "ai" && last.content === aiText) return prev;
+          return [...prev, { type: "ai", content: aiText }];
+        });
+      }
+
+      clearRunSession();
+      pushLog("success", "Workflow finished");
+      return true;
+    },
+    [persistSession, pushLog, stopPolling],
+  );
+
+  const waitForRunViaPolling = useCallback(
+    async (activeThreadId: string, activeRunId: string | null, abort: AbortController) => {
+      while (!abort.signal.aborted && trackingRef.current) {
+        const { state, next, thread } = await refreshThread(activeThreadId);
+        const resolvedRunId = await resolveRunId(activeThreadId, activeRunId);
+        if (resolvedRunId) {
+          runIdRef.current = resolvedRunId;
+          setRunId(resolvedRunId);
+        }
+        let done = next.length === 0;
+        if (resolvedRunId) {
+          try {
+            const runMeta = await fetchRun(activeThreadId, resolvedRunId);
+            done = !ACTIVE_RUN_STATUSES.has(runMeta.status) && next.length === 0;
+            if (runMeta.status === "error") {
+              throw new Error("Agent run failed on the server");
+            }
+          } catch (err) {
+            if (err instanceof Error && err.message.includes("failed")) throw err;
+            done = next.length === 0;
+          }
+        }
+        if (done) {
+          const finalized = finalizePipeline(
+            buildPipelineFromState(state, next, thread, completedNodesRef.current).steps,
+            state,
+            completedNodesRef.current,
+            next,
+            thread,
+          );
+          publishSteps(setSteps, finalized);
+          setResult(state);
+          return state;
+        }
+        await sleep(POLL_MS);
+      }
+      return null;
+    },
+    [refreshThread],
+  );
+
+  const processStream = useCallback(
+    async (
+      stream: AsyncIterable<{ event?: string; data?: unknown }>,
+      ctx: {
+        threadId: string;
+        abort: AbortController;
+        initialState?: AgentState;
+      },
+    ) => {
+      let latestState: AgentState = ctx.initialState ?? {};
+      let latestNext: string[] = [];
+      let latestThread: ThreadSnapshot = {};
+      const loggedNodes = new Set<string>();
+      let streamDisconnected = false;
+
+      const syncFromThread = async (partial?: AgentState) => {
+        const refreshed = await refreshThread(ctx.threadId, partial ?? latestState);
+        latestState = refreshed.state;
+        latestNext = refreshed.next;
+        latestThread = refreshed.thread;
+        return refreshed;
+      };
+
+      const mergeAndPublish = (patch: Record<string, unknown>, nodeName?: string) => {
+        latestState = { ...latestState, ...patch } as AgentState;
+        if (nodeName) {
+          completedNodesRef.current.add(nodeName);
+          const stepId = stepIdForNode(nodeName);
+          if (stepId) {
+            const detail = detailForNode(nodeName, latestState as Record<string, unknown>);
+            let nextSteps = markStepCompleted(
+              buildPipelineFromState(
+                latestState,
+                latestNext,
+                latestThread,
+                completedNodesRef.current,
+              ).steps,
+              stepId,
+              detail,
+            );
+            // Start next pending required step hint from thread next
+            const active = latestNext[0];
+            if (active) {
+              const activeId = stepIdForNode(normalizeNodeName(active));
+              if (activeId) {
+                nextSteps = markStepRunning(
+                  nextSteps,
+                  activeId,
+                  detailForNode(normalizeNodeName(active), latestState as Record<string, unknown>),
+                );
+              }
+            }
+            publishSteps(setSteps, nextSteps);
+            flushSync(() => setResult(latestState));
+            persistSession({
+              threadId: ctx.threadId,
+              steps: nextSteps,
+              partialState: latestState,
+              running: true,
+            });
+            return;
+          }
+        }
+        publishFromState(latestState, latestNext, latestThread);
+      };
+
+      try {
+        for await (const chunk of stream) {
+          if (ctx.abort.signal.aborted) {
+            streamDisconnected = true;
+            break;
+          }
+
+          const event = normalizeStreamEvent(String(chunk.event ?? ""));
+
+          if (event === "metadata") {
+            const meta = chunk.data as { run_id?: string } | undefined;
+            if (meta?.run_id) {
+              const id = String(meta.run_id);
+              runIdRef.current = id;
+              setRunId(id);
+              persistSession({ threadId: ctx.threadId, runId: id, running: true });
+            }
+          }
+
+          if (event === "error") {
+            const errData = chunk.data as { message?: string; error?: string };
+            throw new Error(errData?.message || errData?.error || "Agent stream error");
+          }
+
+          if (event === "events") {
+            if (isChainStartEvent(chunk.data)) {
+              const nodeName = normalizeNodeName(parseEventNodeName(chunk.data) ?? "");
+              if (nodeName && !loggedNodes.has(nodeName)) {
+                loggedNodes.add(nodeName);
+                pushLog("info", `Node started: ${nodeName}`);
+                const stepId = stepIdForNode(nodeName);
+                if (stepId) {
+                  publishSteps(
+                    setSteps,
+                    markStepRunning(
+                      stepsLiveRef.current,
+                      stepId,
+                      detailForNode(nodeName, latestState as Record<string, unknown>),
+                    ),
+                  );
+                }
+                await syncFromThread();
+              }
+            }
+            if (isChainEndEvent(chunk.data)) {
+              const nodeName = normalizeNodeName(parseEventNodeName(chunk.data) ?? "");
+              if (nodeName && stepIdForNode(nodeName)) {
+                const nodeOutput = parseEventNodeOutput(chunk.data);
+                const payload =
+                  Object.keys(nodeOutput).length > 0
+                    ? nodeOutput
+                    : (latestState as Record<string, unknown>);
+                const merged = payloadForNode(nodeName, payload, latestState);
+                const detail = detailForNode(nodeName, merged);
+                pushLog("info", `${nodeName}: ${detail}`);
+                await syncFromThread(merged as AgentState);
+              }
+            }
+          }
+
+          if (event === "updates" && chunk.data && typeof chunk.data === "object") {
+            for (const [rawNode, nodeUpdate] of Object.entries(chunk.data)) {
+              const nodeName = normalizeNodeName(rawNode);
+              if (stepIdForNode(nodeName)) {
+                const merged = payloadForNode(
+                  nodeName,
+                  nodeUpdate as Record<string, unknown>,
+                  latestState,
+                );
+                const detail = detailForNode(nodeName, merged);
+                if (!loggedNodes.has(`${nodeName}:done`)) {
+                  loggedNodes.add(`${nodeName}:done`);
+                  pushLog("info", `${nodeName}: ${detail}`);
+                }
+                mergeAndPublish(merged, nodeName);
+              }
+            }
+            await syncFromThread();
+          }
+
+          if (event === "values" && chunk.data) {
+            latestState = { ...(latestState as AgentState), ...(chunk.data as AgentState) };
+            await syncFromThread(latestState);
+          }
+        }
+      } catch (err) {
+        if (!ctx.abort.signal.aborted) throw err;
+        streamDisconnected = true;
+      }
+
+      if (!streamDisconnected) {
+        await syncFromThread(latestState);
+        const finalized = finalizePipeline(
+          buildPipelineFromState(
+            latestState,
+            latestNext,
+            latestThread,
+            completedNodesRef.current,
+          ).steps,
+          latestState,
+          completedNodesRef.current,
+          latestNext,
+          latestThread,
+        );
+        flushSync(() => setResult(latestState));
+        publishSteps(setSteps, finalized);
+        persistSession({
+          threadId: ctx.threadId,
+          steps: finalized,
+          partialState: latestState,
+          running: trackingRef.current,
+        });
+      }
+
+      return { state: latestState, streamDisconnected };
+    },
+    [persistSession, publishFromState, pushLog, refreshThread],
+  );
+
+  const trackRun = useCallback(
+    async (
+      activeThreadId: string,
+      activeRunId: string | null,
+      options: { resume?: boolean; initialState?: AgentState } = {},
+    ) => {
+      if (resumeLockRef.current) return;
+      resumeLockRef.current = true;
+
+      const abort = new AbortController();
+      abortRef.current = abort;
+      trackingRef.current = true;
+      setRunning(true);
+      setThreadId(activeThreadId);
+      threadIdRef.current = activeThreadId;
+
+      if (options.resume) {
+        setReconnected(true);
+        pushLog("info", "Reconnected to in-progress run after page refresh");
+      }
+
+      const resolvedRunId = await resolveRunId(activeThreadId, activeRunId);
+      if (resolvedRunId) {
+        runIdRef.current = resolvedRunId;
+        setRunId(resolvedRunId);
+      }
+
+      persistSession({
+        threadId: activeThreadId,
+        runId: resolvedRunId,
+        running: true,
+        reconnected: options.resume,
+      });
+
+      startPolling(activeThreadId);
+
+      try {
+        const { state, next, thread } = await refreshThread(
+          activeThreadId,
+          options.initialState ?? {},
+        );
+        publishFromState(state, next, thread);
+
+        const stillActive = await isRunStillActive(activeThreadId, resolvedRunId);
+
+        if (stillActive) {
+          if (resolvedRunId) {
+            try {
+              const stream = joinRunStream(activeThreadId, resolvedRunId, abort.signal);
+              const { state: streamed, streamDisconnected } = await processStream(stream, {
+                threadId: activeThreadId,
+                abort,
+                initialState: state,
+              });
+              if (!streamDisconnected) {
+                await finishRun(activeThreadId, runIdRef.current, streamed);
+                return;
+              }
+              pushLog("warn", "Stream disconnected — continuing via polling");
+            } catch {
+              pushLog("warn", "Stream rejoin unavailable — tracking via polling");
+            }
+          }
+          const polled = await waitForRunViaPolling(activeThreadId, runIdRef.current, abort);
+          await finishRun(activeThreadId, runIdRef.current, polled ?? undefined);
+          return;
+        }
+
+        const finalized = finalizePipeline(
+          buildPipelineFromState(state, next, thread, completedNodesRef.current).steps,
+          state,
+          completedNodesRef.current,
+          next,
+          thread,
+        );
+        publishSteps(setSteps, finalized);
+        setResult(state);
+        await finishRun(activeThreadId, resolvedRunId, state);
+      } catch (err) {
+        if (abort.signal.aborted) {
+          pushLog("warn", "Run stopped");
+        } else {
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          pushLog("error", message);
+        }
+        trackingRef.current = false;
+        stopPolling();
+        setRunning(false);
+        persistSession({ threadId: activeThreadId, runId: runIdRef.current, running: false });
+      } finally {
+        resumeLockRef.current = false;
+      }
+    },
+    [
+      finishRun,
+      persistSession,
+      processStream,
+      publishFromState,
+      pushLog,
+      refreshThread,
+      startPolling,
+      stopPolling,
+      waitForRunViaPolling,
+    ],
+  );
+
+  const run = useCallback(
+    async (request: RunRequest) => {
+      if (!request.user_input?.trim()) {
+        setError("User input is required.");
+        return;
+      }
+
+      abortRef.current?.abort();
+      stopPolling();
+      completedNodesRef.current = new Set();
+      clearRunSession();
+
+      setRunning(true);
+      setReconnected(false);
+      setError(null);
+      setResult(null);
+      setLogs([]);
+      publishSteps(setSteps, startPipeline(initialStepStates()));
+
+      const currentUserMessage = { type: "human" as const, content: request.user_input.trim() };
+      let finalRequest: RunRequest = {
+        ...request,
+        conversation_messages: [...conversationMessages, currentUserMessage],
+      };
+
+      if (isLocationQuery(request.user_input)) {
+        pushLog("info", "Detecting your location…");
+        try {
+          const coords = await getBrowserLocation();
+          if (coords.lat !== 0 || coords.lng !== 0) {
+            finalRequest = {
+              ...finalRequest,
+              user_latitude: coords.lat,
+              user_longitude: coords.lng,
+            };
+            pushLog(
+              "info",
+              `Location detected: ${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`,
+            );
+          } else {
+            pushLog("warn", "Location unavailable — sending without coordinates");
+          }
+        } catch {
+          pushLog("warn", "Could not detect location");
+        }
+      }
+
+      setConversationMessages((prev) => [...prev, currentUserMessage]);
+      pushLog("info", "Sending request to Andromeda…");
+
+      const abort = new AbortController();
+      abortRef.current = abort;
+      trackingRef.current = true;
+
+      try {
+        const { threadId: createdThreadId, runId: createdRunId, stream } = await streamAgentRun(
+          finalRequest,
+          abort.signal,
+        );
+        threadIdRef.current = createdThreadId;
+        runIdRef.current = createdRunId;
+        setThreadId(createdThreadId);
+        setRunId(createdRunId);
+        pushLog("info", `Thread ${createdThreadId.slice(0, 8)}…`);
+
+        persistSession({
+          threadId: createdThreadId,
+          runId: createdRunId,
+          running: true,
+          steps: startPipeline(initialStepStates()),
+        });
+        startPolling(createdThreadId);
+
+        const { state, streamDisconnected } = await processStream(stream, {
+          threadId: createdThreadId,
+          abort,
+        });
+
+        if (streamDisconnected || (await isRunStillActive(createdThreadId, runIdRef.current))) {
+          const polled = await waitForRunViaPolling(createdThreadId, runIdRef.current, abort);
+          await finishRun(createdThreadId, runIdRef.current, polled ?? state);
+        } else {
+          await finishRun(createdThreadId, runIdRef.current, state);
+        }
+      } catch (err) {
+        if (abort.signal.aborted) {
+          pushLog("warn", "Run stopped");
+          persistSession({
+            threadId: threadIdRef.current,
+            runId: runIdRef.current,
+            running: false,
+          });
+        } else {
+          const message = err instanceof Error ? err.message : String(err);
+          setError(message);
+          pushLog("error", message);
+          setSteps((prev) =>
+            prev.map((s) =>
+              s.status === "running" ? { ...s, status: "error", detail: message } : s,
+            ),
+          );
+        }
+        trackingRef.current = false;
+        stopPolling();
+        setRunning(false);
+      }
+    },
+    [
+      conversationMessages,
+      finishRun,
+      persistSession,
+      processStream,
+      pushLog,
+      startPolling,
+      stopPolling,
+      waitForRunViaPolling,
+    ],
+  );
+
+  const cancel = useCallback(() => {
+    const tid = threadIdRef.current;
+    const rid = runIdRef.current;
+    abortRef.current?.abort();
+    trackingRef.current = false;
+    stopPolling();
+    clearRunSession();
+    setRunning(false);
+    pushLog("warn", "Stopping agent…");
+    if (tid) {
+      void cancelAgentRun(tid, rid);
+    }
+  }, [pushLog, stopPolling]);
+
+  useEffect(() => {
+    const session = loadRunSession();
+    if (!session?.threadId || !session.running) return;
+
+    void trackRun(session.threadId, session.runId, {
+      resume: true,
+      initialState: session.partialState ?? {},
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => () => stopPolling(), [stopPolling]);
 
   return {
     running,
@@ -181,6 +788,7 @@ export function useAgentRun() {
     logs,
     threadId,
     runId,
+    conversationMessages,
     run,
     cancel,
     reset,

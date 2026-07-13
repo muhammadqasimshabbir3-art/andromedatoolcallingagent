@@ -1,92 +1,48 @@
+import { Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { Loader2, RefreshCw, Server, Wifi, WifiOff } from "lucide-react";
 import { ConnectionDiagnostic } from "./ConnectionDiagnostic";
 import type { ServerStatus } from "../hooks/useServerHealth";
 
 interface ConnectionPanelProps {
   status: ServerStatus;
-  latencyMs: number | null;
-  apiUrl: string;
-  assistantId: string;
-  threadId: string | null;
-  runId: string | null;
   onRefresh: () => void;
 }
 
-export function ConnectionPanel({
-  status,
-  latencyMs,
-  apiUrl,
-  assistantId,
-  threadId,
-  runId,
-  onRefresh,
-}: ConnectionPanelProps) {
+export function ConnectionPanel({ status, onRefresh }: ConnectionPanelProps) {
   const [diagRun, setDiagRun] = useState(false);
+  const online = status === "online";
+  const checking = status === "checking";
 
   return (
-    <aside className="panel connection-panel">
-      <div className="panel-title">
-        <Server size={16} />
-        <span>Backend</span>
+    <aside className="panel connection-panel connection-panel-compact">
+      <div className="backend-status-row">
+        <div className="backend-status-label">
+          <span
+            className={`status-light ${online ? "online" : checking ? "checking" : "offline"}`}
+            aria-hidden
+          />
+          <span className="backend-status-text">
+            {checking ? "Checking…" : online ? "Connected" : "Offline"}
+          </span>
+        </div>
         <button type="button" className="icon-btn" onClick={onRefresh} title="Refresh connection">
-          <RefreshCw size={14} />
+          {checking ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
         </button>
       </div>
 
-      <div className="connection-grid">
-        <div className="connection-row">
-          <span>API</span>
-          <code className="mono">{apiUrl}</code>
-        </div>
-        <div className="connection-row">
-          <span>Graph</span>
-          <code className="mono">{assistantId}</code>
-        </div>
-        <div className="connection-row">
-          <span>Health</span>
-          <span className={`health ${status}`}>
-            {status === "checking" && <Loader2 size={14} className="spin" />}
-            {status === "online" && <Wifi size={14} />}
-            {status === "offline" && <WifiOff size={14} />}
-            {status}
-            {latencyMs != null ? ` (${latencyMs}ms)` : ""}
-          </span>
-        </div>
-
-        {threadId && (
-          <div className="connection-row">
-            <span>Thread</span>
-            <code className="mono">{threadId.slice(0, 12)}…</code>
-          </div>
-        )}
-        {runId && (
-          <div className="connection-row">
-            <span>Run</span>
-            <code className="mono">{runId.slice(0, 12)}…</code>
-          </div>
-        )}
-      </div>
-
-      {status === "offline" && (
-        <div className="deploy-note">
-          <strong>Connection help</strong>
-          <p>
-            The UI could not reach the LangGraph API. Run a diagnostic to see whether env vars,
-            network, or CORS is blocking the request.
-          </p>
+      {!online && !checking && (
+        <div className="deploy-note" style={{ marginTop: "0.75rem" }}>
           <button
             type="button"
-            className="btn ghost"
+            className="btn ghost small"
             onClick={() => setDiagRun(true)}
             disabled={diagRun}
           >
-            Run connection diagnostic
+            Run diagnostic
           </button>
+          <ConnectionDiagnostic run={diagRun} />
         </div>
       )}
-
-      <ConnectionDiagnostic run={diagRun} />
     </aside>
   );
 }

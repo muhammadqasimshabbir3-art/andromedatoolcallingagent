@@ -45,6 +45,15 @@ class WorkflowContext:
     pdf_absolute_path: Path | None = None
 
 
+@dataclass
+class WorkflowResult:
+    """Outcome of a multi-task workflow run."""
+
+    message: AIMessage
+    pdf_path: str | None = None
+    pdf_filename: str | None = None
+
+
 def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
     return slug or "report"
@@ -180,8 +189,8 @@ def _is_research_report(plan: TaskPlan) -> bool:
     )
 
 
-def execute_task_plan(plan: TaskPlan) -> AIMessage:
-    """Run each planned task in order and return a combined response."""
+def execute_task_plan(plan: TaskPlan) -> WorkflowResult:
+    """Run each planned task in order and return a combined response + PDF metadata."""
     ctx = WorkflowContext(plan=plan)
     sections: list[str] = [f"**Decision agent task plan:** {plan.summary()}", ""]
 
@@ -324,4 +333,10 @@ def execute_task_plan(plan: TaskPlan) -> AIMessage:
             )
             sections.append(email_result)
 
-    return AIMessage(content="\n\n".join(sections).strip())
+    message = AIMessage(content="\n\n".join(sections).strip())
+    pdf_abs = ctx.pdf_absolute_path
+    return WorkflowResult(
+        message=message,
+        pdf_path=str(pdf_abs) if pdf_abs else None,
+        pdf_filename=pdf_abs.name if pdf_abs else None,
+    )

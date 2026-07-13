@@ -60,11 +60,13 @@ def test_workflow_uses_topic_pdf_path_not_math_default(mock_search, mock_email):
     mock_email.return_value = "Email sent successfully.\nAttachments: malaria_report.pdf"
 
     plan = plan_tasks(MALARIA_QUERY)
-    response = execute_task_plan(plan)
+    result = execute_task_plan(plan)
 
-    assert "malaria_report.pdf" in response.content
+    assert "malaria_report.pdf" in result.message.content
     mock_email.assert_called_once()
     attachment = mock_email.call_args.kwargs["attachment_paths"]
     assert attachment is not None
     assert "math_exam" not in attachment.lower()
     assert "malaria" in attachment.lower()
+    assert result.pdf_filename is not None
+    assert "malaria" in result.pdf_filename.lower()

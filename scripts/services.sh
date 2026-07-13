@@ -3,6 +3,7 @@
 
 LANGGRAPH_PORT="${LANGGRAPH_PORT:-2024}"
 STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 
 load_dotenv() {
     local env_file="${1:-.env}"
@@ -68,10 +69,16 @@ stop_streamlit() {
     stop_port "${STREAMLIT_PORT}"
 }
 
+stop_frontend() {
+    pkill -f "vite" 2>/dev/null || true
+    stop_port "${FRONTEND_PORT}"
+}
+
 stop_all_services() {
-    echo "Stopping services on ports ${LANGGRAPH_PORT} and ${STREAMLIT_PORT}..."
+    echo "Stopping services on ports ${LANGGRAPH_PORT}, ${STREAMLIT_PORT}, and ${FRONTEND_PORT}..."
     stop_langgraph
     stop_streamlit
+    stop_frontend
     echo "Services stopped."
 }
 
@@ -81,10 +88,10 @@ wait_for_port() {
     local i=0
 
     while [ "$i" -lt "$retries" ]; do
-        if command -v curl &>/dev/null && curl -fsS "http://127.0.0.1:${port}/ok" >/dev/null 2>&1; then
+        if command -v curl &>/dev/null && curl -fsS --max-time 1 "http://127.0.0.1:${port}/ok" >/dev/null 2>&1; then
             return 0
         fi
-        if command -v curl &>/dev/null && curl -fsS "http://127.0.0.1:${port}" >/dev/null 2>&1; then
+        if command -v curl &>/dev/null && curl -fsS --max-time 1 "http://127.0.0.1:${port}" >/dev/null 2>&1; then
             return 0
         fi
         sleep 1

@@ -109,6 +109,7 @@ More flow detail is in [AgentWorkflow.md](./AgentWorkflow.md).
 .
 ├── README.md
 ├── AgentWorkflow.md
+├── .env.example
 ├── Dockerfile
 ├── langgraph.json
 ├── pyproject.toml
@@ -167,39 +168,25 @@ Web search does not need a separate API key. Location lookup uses public OpenStr
 
 ## Environment Variables
 
-Create a root `.env` file before running `setup.sh` or `start.sh`.
+Copy the example file and fill in your keys before running `setup.sh` or `start.sh`:
 
-```env
-GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=llama3-8b-8192
-
-# Optional LangSmith tracing/auth
-LANGSMITH_API_KEY=
-LANGSMITH_PROJECT=new-agent
-
-# Gmail OAuth inbox automation
-GOOGLE_CLIENT_SECRETS=client_secret.json
-GMAIL_TOKEN_FILE=gmail_token.json
-GMAIL_SCOPES=https://www.googleapis.com/auth/gmail.modify
-GMAIL_USER_ID=me
-GMAIL_INBOX_QUERY=is:unread in:inbox
-GMAIL_PROCESS_LIMIT=0
-
-# Ollama fallback for Gmail replies
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2
-OLLAMA_TIMEOUT=120
-OLLAMA_MAX_TOKENS=512
-
-# Optional legacy SMTP helper
-GMAIL_SMTP_USER=your.email@gmail.com
-GMAIL_APP_PASSWORD="abcd efgh ijkl mnop"
-GMAIL_DEFAULT_RECIPIENT=your.email@gmail.com
-
-# Optional location service identity
-OSM_USER_AGENT=AndromedaAgent/0.1 (your-contact@example.com)
-LOG_LEVEL=INFO
+```bash
+cp .env.example .env
 ```
+
+See [`.env.example`](./.env.example) for the full list. Key variables:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `GROQ_API_KEY` | Yes | Groq LLM API |
+| `GROQ_MODEL` | No | Groq model (default `llama3-8b-8192`) |
+| `LANGSMITH_API_KEY` | No | LangSmith tracing / auth |
+| `GOOGLE_CLIENT_SECRETS` | For Gmail inbox | Path to OAuth client JSON |
+| `GMAIL_TOKEN_FILE` | For Gmail inbox | Cached OAuth token path |
+| `OLLAMA_URL` / `OLLAMA_MODEL` | No | Local fallback for Gmail replies |
+| `GMAIL_SMTP_USER` / `GMAIL_APP_PASSWORD` | For SMTP | Legacy outbound email helper |
+| `OSM_USER_AGENT` | No | OpenStreetMap identity string |
+| `LOG_LEVEL` | No | Logging level (default `INFO`) |
 
 ### Frontend Environment
 
@@ -222,6 +209,7 @@ git clone https://github.com/YOUR_USERNAME/andromeda-agent.git
 cd andromeda-agent
 
 # Create and edit .env first.
+cp .env.example .env
 nano .env
 
 chmod +x setup.sh start.sh
@@ -239,13 +227,29 @@ uv sync
 
 ## Running The Project
 
-### Streamlit UI
+### Modern Web UI (Vite / React)
+
+```bash
+./start.sh both
+```
+
+Open **`http://localhost:5173`** — this is the modern Andromeda console (prompt, pipeline, results).
+
+For UI only (LangGraph already running):
 
 ```bash
 ./start.sh ui
 ```
 
+### Legacy Streamlit UI
+
+```bash
+./start.sh streamlit
+```
+
 Open `http://localhost:8501`.
+
+CORS for local UIs (Streamlit `8501`, Vite `5173`, LangGraph Studio) is set in [`langgraph.json`](./langgraph.json) and via `CORS_ALLOW_ORIGINS` in `.env`.
 
 The Streamlit UI includes chat history, web-search toggle, PDF upload/analysis, browser geolocation fallback, environment status, and example prompts.
 

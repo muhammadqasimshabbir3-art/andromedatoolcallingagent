@@ -1,12 +1,17 @@
 import type { AgentRunSettings } from "../types";
 import { defaultRunSettings } from "./defaultSettings";
 
-const STORAGE_KEY = "yt-agent-run-settings";
+const STORAGE_KEY = "andromeda-agent-run-settings";
+const LEGACY_STORAGE_KEY = "yt-agent-run-settings";
 
 export function loadRunSettings(): AgentRunSettings {
   const defaults = defaultRunSettings();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? sessionStorage.getItem(STORAGE_KEY);
+    const raw =
+      localStorage.getItem(STORAGE_KEY) ??
+      sessionStorage.getItem(STORAGE_KEY) ??
+      localStorage.getItem(LEGACY_STORAGE_KEY) ??
+      sessionStorage.getItem(LEGACY_STORAGE_KEY);
     if (!raw) return defaults;
     const parsed = JSON.parse(raw) as Partial<AgentRunSettings>;
     return { ...defaults, ...parsed };
@@ -23,6 +28,8 @@ export function saveRunSettings(settings: AgentRunSettings): void {
   try {
     localStorage.setItem(STORAGE_KEY, raw);
     sessionStorage.setItem(STORAGE_KEY, raw);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    sessionStorage.removeItem(LEGACY_STORAGE_KEY);
   } catch {
     // ignore quota / private mode
   }

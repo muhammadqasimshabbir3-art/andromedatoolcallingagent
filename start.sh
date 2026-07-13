@@ -17,14 +17,14 @@ cd "$SCRIPT_DIR"
 source "${SCRIPT_DIR}/scripts/services.sh"
 
 LANGGRAPH_PID=""
-STREAMLIT_PID=""
+FRONTEND_PID=""
 
 cleanup() {
     if [ -n "$LANGGRAPH_PID" ]; then
         kill "$LANGGRAPH_PID" 2>/dev/null || true
     fi
-    if [ -n "$STREAMLIT_PID" ]; then
-        kill "$STREAMLIT_PID" 2>/dev/null || true
+    if [ -n "$FRONTEND_PID" ]; then
+        kill "$FRONTEND_PID" 2>/dev/null || true
     fi
 }
 
@@ -48,6 +48,8 @@ set -a
 load_dotenv ".env"
 set +a
 
+FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+
 if [ -z "$GROQ_API_KEY" ]; then
     echo -e "${RED}GROQ_API_KEY is not set in .env${NC}"
     exit 1
@@ -64,13 +66,23 @@ if ! uv run python -c "from agent import graph" 2>/dev/null; then
     uv sync --quiet
 fi
 
+ensure_frontend_deps() {
+    if [ ! -d "frontend/node_modules" ]; then
+        echo -e "${YELLOW}Installing frontend dependencies...${NC}"
+        (cd frontend && npm install)
+    fi
+}
+
 run_ui() {
-    stop_streamlit
-    echo -e "${BLUE}Starting Streamlit Web UI...${NC}"
-    echo -e "${YELLOW}Open: http://localhost:${STREAMLIT_PORT}${NC}"
+    stop_frontend
+    ensure_frontend_deps
+    echo -e "${BLUE}Starting Andromeda Web UI (Vite)...${NC}"
+    echo -e "${YELLOW}Open: http://localhost:${FRONTEND_PORT}${NC}"
+    echo -e "${YELLOW}Tip: run ./start.sh both to start LangGraph + UI together${NC}"
+    echo -e "${YELLOW}Legacy Streamlit: ./start.sh streamlit → http://localhost:${STREAMLIT_PORT}${NC}"
     echo ""
     trap - EXIT INT TERM
-    uv run streamlit run streamlit_ui.py --server.port "${STREAMLIT_PORT}"
+    (cd frontend && npm run dev -- --port "${FRONTEND_PORT}" --host 127.0.0.1)
 }
 
 run_server() {
@@ -90,24 +102,34 @@ run_server() {
 run_both() {
     stop_all_services
 
-    echo -e "${BLUE}Starting LangGraph Server (with Tunnel) + Streamlit UI...${NC}"
+    echo -e "${BLUE}Starting LangGraph Server + Andromeda Web UI...${NC}"
     echo ""
-    echo -e "${YELLOW}⚠️  Using tunnel to expose local server to smith.langchain.com${NC}"
-    echo -e "${YELLOW}    (Browser security prevents direct localhost access)${NC}"
-    echo ""
-    echo -e "${YELLOW}Studio will open automatically once tunnel is ready.${NC}"
-    echo -e "${YELLOW}UI:     http://localhost:${STREAMLIT_PORT}${NC}"
+    echo -e "${YELLOW}API:    http://127.0.0.1:${LANGGRAPH_PORT}${NC}"
+    echo -e "${YELLOW}UI:     http://localhost:${FRONTEND_PORT}${NC}"
+    echo -e "${YELLOW}Tip: use ./start.sh server for Studio tunnel mode${NC}"
     echo ""
 
-    uv run langgraph dev --port "${LANGGRAPH_PORT}" --tunnel &
+    # Local UI pairing: no Cloudflare tunnel (faster, avoids download hangs).
+    uv run langgraph dev --port "${LANGGRAPH_PORT}" &
     LANGGRAPH_PID=$!
 
     echo "Waiting for LangGraph server..."
-    wait_for_port "${LANGGRAPH_PORT}" 30
+    wait_for_port "${LANGGRAPH_PORT}" 45
 
+    ensure_frontend_deps
     trap cleanup EXIT INT TERM
 
-    echo "Starting Streamlit UI..."
+    echo "Starting Andromeda Web UI..."
+    (cd frontend && npm run dev -- --port "${FRONTEND_PORT}" --host 127.0.0.1)
+}
+
+run_streamlit() {
+    stop_streamlit
+    echo -e "${BLUE}Starting legacy Streamlit UI...${NC}"
+    echo -e "${YELLOW}Open: http://localhost:${STREAMLIT_PORT}${NC}"
+    echo -e "${YELLOW}For the modern UI use: ./start.sh ui → http://localhost:${FRONTEND_PORT}${NC}"
+    echo ""
+    trap - EXIT INT TERM
     uv run streamlit run streamlit_ui.py --server.port "${STREAMLIT_PORT}"
 }
 
@@ -124,9 +146,10 @@ run_restart() {
         ui) run_ui ;;
         server) run_server ;;
         both) run_both ;;
+        streamlit) run_streamlit ;;
         *)
             echo -e "${RED}Unknown restart target: $target${NC}"
-            echo "Use: ./start.sh restart [ui|server|both]"
+            echo "Use: ./start.sh restart [ui|server|both|streamlit]"
             exit 1
             ;;
     esac
@@ -136,18 +159,18 @@ show_help() {
     echo "Usage: ./start.sh [command]"
     echo ""
     echo "Commands:"
-    echo "  ui              Start Streamlit chat UI (default)"
-    echo "  server          Start LangGraph Server + Studio"
-    echo "  both            Start both services"
-    echo "  stop            Stop services on ports ${LANGGRAPH_PORT} and ${STREAMLIT_PORT}"
-    echo "  restart [target] Restart ui, server, or both (default: both)"
+    echo "  ui              Start modern Vite/React UI (default) → :${FRONTEND_PORT}"
+    echo "  server          Start LangGraph Server + Studio tunnel"
+    echo "  both            Start LangGraph + modern UI"
+    echo "  streamlit       Start legacy Streamlit UI → :${STREAMLIT_PORT}"
+    echo "  stop            Stop LangGraph / Streamlit / Vite"
+    echo "  restart [target] Restart ui, server, both, or streamlit"
     echo ""
     echo "Examples:"
-    echo "  ./start.sh"
-    echo "  ./start.sh server"
-    echo "  ./start.sh both"
+    echo "  ./start.sh              # modern UI at http://localhost:${FRONTEND_PORT}"
+    echo "  ./start.sh both         # API + modern UI"
+    echo "  ./start.sh streamlit    # legacy UI at http://localhost:${STREAMLIT_PORT}"
     echo "  ./start.sh stop"
-    echo "  ./start.sh restart server"
     echo ""
     echo "First time? Run: ./setup.sh"
     echo "Workflow docs:  AgentWorkflow.md"
@@ -157,7 +180,7 @@ MODE="${1:-ui}"
 ARG2="${2:-}"
 
 case "$MODE" in
-    ui)
+    ui|frontend)
         run_ui
         ;;
     server)
@@ -165,6 +188,9 @@ case "$MODE" in
         ;;
     both)
         run_both
+        ;;
+    streamlit)
+        run_streamlit
         ;;
     stop)
         run_stop

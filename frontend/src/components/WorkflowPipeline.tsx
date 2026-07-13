@@ -32,7 +32,12 @@ function StatusIcon({ status, emoji }: { status: StepStatus; emoji: string }) {
   }
 }
 
-export function WorkflowPipeline({ steps, running, reconnected, taskPlanSummary }: WorkflowPipelineProps) {
+export function WorkflowPipeline({
+  steps,
+  running,
+  reconnected,
+  taskPlanSummary,
+}: WorkflowPipelineProps) {
   const progress = progressPercent(steps);
   const activeStep = steps.find((s) => s.status === "running");
 
@@ -41,17 +46,17 @@ export function WorkflowPipeline({ steps, running, reconnected, taskPlanSummary 
       <div className="pipeline-header">
         <div>
           <div className="panel-title">
-            <span>⚡ Agent Pipeline</span>
+            <span>Agent pipeline</span>
             {running && <CircleDashed size={16} className="spin" />}
           </div>
           <p className="panel-desc">
             Live LangGraph stream — steps turn <strong>running</strong> when nodes start,{" "}
-            <strong>completed</strong> when they finish.
+            <strong>completed</strong> when they finish. Optional routes stay pending if unused.
           </p>
           {activeStep && running && (
             <p className="active-step-hint">
-              {WORKFLOW_STEPS.find((s) => s.id === activeStep.id)?.emoji}{" "}
-              Currently: <strong>{WORKFLOW_STEPS.find((s) => s.id === activeStep.id)?.label}</strong>
+              {WORKFLOW_STEPS.find((s) => s.id === activeStep.id)?.emoji} Currently:{" "}
+              <strong>{WORKFLOW_STEPS.find((s) => s.id === activeStep.id)?.label}</strong>
             </p>
           )}
         </div>
@@ -62,11 +67,11 @@ export function WorkflowPipeline({ steps, running, reconnected, taskPlanSummary 
 
       {reconnected && running && (
         <div className="task-plan reconnect-banner">
-          🔄 Reconnected — agent kept running on the server while you refreshed
+          Reconnected — agent kept running on the server while you refreshed
         </div>
       )}
 
-      {taskPlanSummary && <div className="task-plan">📋 {taskPlanSummary}</div>}
+      {taskPlanSummary && <div className="task-plan">{taskPlanSummary}</div>}
 
       <ol className="pipeline-steps">
         {WORKFLOW_STEPS.map((def) => {
@@ -83,7 +88,7 @@ export function WorkflowPipeline({ steps, running, reconnected, taskPlanSummary 
                   <strong>{def.label}</strong>
                   {def.optional && <span className="optional-tag">optional</span>}
                   <span className={`step-badge ${status}`}>
-                    {status === "running" ? "🔄 running" : status}
+                    {status === "running" ? "running" : status}
                   </span>
                 </div>
                 <p>{def.description}</p>

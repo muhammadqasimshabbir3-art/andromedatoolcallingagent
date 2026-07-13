@@ -114,15 +114,15 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
 
   return (
     <section className="panel" style={{ marginTop: "1rem" }}>
-      <div className="panel-title">🔍 Connection Diagnostic</div>
+      <div className="panel-title">Connection diagnostic</div>
       <div style={{ display: "flex", flexDirection: "column", gap: "8px", padding: "12px 0" }}>
         {steps.map((s, i) => (
           <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
             <span style={{ flexShrink: 0, marginTop: "2px" }}>
               {s.status === "pending" && <span style={{ color: "var(--muted)" }}>○</span>}
               {s.status === "running" && <Loader2 size={16} className="spin" style={{ color: "var(--accent)" }} />}
-              {s.status === "ok" && <CheckCircle2 size={16} style={{ color: "#22c55e" }} />}
-              {s.status === "fail" && <XCircle size={16} style={{ color: "#ef4444" }} />}
+              {s.status === "ok" && <CheckCircle2 size={16} style={{ color: "var(--success)" }} />}
+              {s.status === "fail" && <XCircle size={16} style={{ color: "var(--danger)" }} />}
             </span>
             <div>
               <strong style={{ fontSize: "0.85rem" }}>{s.label}</strong>
@@ -135,9 +135,10 @@ export function ConnectionDiagnostic({ run }: { run: boolean }) {
           </div>
         ))}
       </div>
-      <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: "8px", padding: "8px", background: "var(--bg-secondary)", borderRadius: "6px" }}>
+      <div className="deploy-note" style={{ marginTop: "8px" }}>
         <AlertTriangle size={12} style={{ display: "inline", marginRight: "4px" }} />
-        If step 2 fails with CORS: add <code>CORS_ALLOW_ORIGINS=https://andromedatoolcallingagent.vercel.app</code> to Railway env vars.
+        If step 2 fails with CORS: set <code>CORS_ALLOW_ORIGINS</code> to include your UI origin
+        (e.g. <code>http://localhost:8501</code>, <code>http://localhost:5173</code>, or your Vercel URL).
       </div>
     </section>
   );

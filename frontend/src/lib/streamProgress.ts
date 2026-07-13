@@ -1,5 +1,10 @@
 import type { AgentState, StepState, StepStatus } from "../types";
-import { detailForNode, initialStepStates, stepIdForNode, WORKFLOW_STEPS } from "./workflowSteps";
+import {
+  detailForNode,
+  initialStepStates,
+  stepIdForNode,
+  WORKFLOW_STEPS,
+} from "./workflowSteps";
 
 export interface ThreadSnapshot {
   values?: AgentState | Record<string, unknown>;
@@ -69,7 +74,7 @@ export function markStepRunning(steps: StepState[], stepId: string, detail?: str
         startedAt: step.startedAt ?? new Date().toISOString(),
       };
     }
-    if (step.status === "running") {
+    if (step.status === "running" && step.id !== stepId) {
       return { ...step, status: "pending" as StepStatus, detail: undefined };
     }
     return step;
@@ -95,44 +100,62 @@ export function startPipeline(steps: StepState[]): StepState[] {
   return markStepRunning(steps, WORKFLOW_STEPS[0].id, "Agent starting…");
 }
 
+export function applyCompletedNodes(
+  steps: StepState[],
+  completedNodes: Set<string>,
+  state: AgentState,
+): StepState[] {
+  let next = steps;
+  for (const node of completedNodes) {
+    const stepId = stepIdForNode(node);
+    if (!stepId) continue;
+    next = markStepCompleted(next, stepId, detailForNode(node, state as Record<string, unknown>));
+  }
+  return next;
+}
+
 export function buildPipelineFromState(
   state: AgentState,
   nextNodes: string[] = [],
   thread: ThreadSnapshot = {},
+  knownCompleted: Set<string> = new Set(),
 ): { steps: StepState[]; completedNodes: Set<string> } {
-  const completedNodes = new Set<string>();
+  const completedNodes = new Set(knownCompleted);
   let steps = initialStepStates();
 
-  const activeNodes = activeGraphNodes({ ...thread, next: nextNodes });
-  
-  // For Andromeda, we just look at the active nodes and completed nodes 
-  // passed through events. Since we cannot easily infer from state alone which
-  // node is complete (except maybe decision_agent), we rely more on the streaming
-  // updates. Here we do a simple mapping.
-  
   if (state.task_plan_summary || state.agent_route) {
     completedNodes.add("prepare_input");
     completedNodes.add("decision_agent");
-    steps = markStepCompleted(steps, "prepare_input", detailForNode("prepare_input", state as any));
-    steps = markStepCompleted(steps, "decision_agent", detailForNode("decision_agent", state as any));
   }
 
+  steps = applyCompletedNodes(steps, completedNodes, state);
+
+  const activeNodes = activeGraphNodes({ ...thread, next: nextNodes });
   if (activeNodes.length > 0) {
     const activeNode = activeNodes[0];
     const stepId = stepIdForNode(activeNode);
     if (stepId) {
-      steps = markStepRunning(steps, stepId, detailForNode(activeNode, state as any));
+      steps = markStepRunning(steps, stepId, detailForNode(activeNode, state as Record<string, unknown>));
     }
   }
 
-  // If there are no next nodes and we have messages, we can assume the workflow has finished.
-  if (nextNodes.length === 0 && state.messages && state.messages.length > 0) {
-     steps = steps.map(s => {
-       if (s.status === "running") {
-         return { ...s, status: "completed" as StepStatus, completedAt: new Date().toISOString() };
-       }
-       return s;
-     });
+  const finished =
+    nextNodes.length === 0 &&
+    ((state.messages && state.messages.length > 0) || Boolean(state.task_plan_summary));
+
+  if (finished) {
+    steps = steps.map((s) => {
+      if (s.status === "running") {
+        return { ...s, status: "completed" as StepStatus, completedAt: new Date().toISOString() };
+      }
+      if (s.status === "pending") {
+        const def = WORKFLOW_STEPS.find((d) => d.id === s.id);
+        if (def?.optional) {
+          return { ...s, status: "skipped" as StepStatus, detail: "Not used this run" };
+        }
+      }
+      return s;
+    });
   }
 
   return { steps, completedNodes };
@@ -145,7 +168,7 @@ export function finalizePipeline(
   nextNodes?: string[],
   thread?: ThreadSnapshot,
 ): StepState[] {
-  const rebuilt = buildPipelineFromState(state, nextNodes ?? [], thread ?? {});
+  const rebuilt = buildPipelineFromState(state, nextNodes ?? [], thread ?? {}, completedNodes);
   completedNodes.clear();
   for (const node of rebuilt.completedNodes) {
     completedNodes.add(node);
@@ -162,9 +185,16 @@ export function payloadForNode(
 }
 
 export function progressPercent(steps: StepState[]): number {
-  const total = WORKFLOW_STEPS.length;
-  if (!total) return 0;
-  const completed = steps.filter((s) => s.status === "completed" || s.status === "skipped").length;
+  const relevant = WORKFLOW_STEPS.filter((def) => {
+    const state = steps.find((s) => s.id === def.id);
+    if (!def.optional) return true;
+    return state?.status === "running" || state?.status === "completed" || state?.status === "error";
+  });
+  const total = Math.max(relevant.length, 1);
+  const completed = relevant.filter((def) => {
+    const state = steps.find((s) => s.id === def.id);
+    return state?.status === "completed" || state?.status === "skipped";
+  }).length;
   const running = steps.some((s) => s.status === "running") ? 0.5 : 0;
   return Math.min(100, Math.round(((completed + running) / total) * 100));
 }

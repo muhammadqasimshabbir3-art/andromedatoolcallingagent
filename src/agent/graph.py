@@ -89,6 +89,8 @@ class State(TypedDict):
     pdf_data_base64: NotRequired[str]
     pdf_filename: NotRequired[str]
     pdf_summarize_only: NotRequired[bool]
+    generated_pdf_path: NotRequired[str]
+    generated_pdf_filename: NotRequired[str]
 
 
 _model_instance = None
@@ -233,8 +235,13 @@ async def execute_workflow(state: State) -> dict[str, Any]:
     user_text = get_latest_user_text(messages)
     web_search_enabled = bool(state.get("web_search_enabled", False))
     task_plan = plan_tasks(user_text, web_search_enabled)
-    response = await run_in_thread(execute_task_plan, task_plan)
-    return {"messages": [response]}
+    result = await run_in_thread(execute_task_plan, task_plan)
+    payload: dict[str, Any] = {"messages": [result.message]}
+    if result.pdf_path:
+        payload["generated_pdf_path"] = result.pdf_path
+    if result.pdf_filename:
+        payload["generated_pdf_filename"] = result.pdf_filename
+    return payload
 
 
 async def run_calculator(state: State) -> dict[str, Any]:

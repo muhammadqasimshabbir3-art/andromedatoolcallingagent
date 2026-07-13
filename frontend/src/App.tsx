@@ -1,10 +1,7 @@
 import { useCallback, useState } from "react";
-import { ASSISTANT_ID } from "./config";
 import { AgentHeader } from "./components/AgentHeader";
-import { ActivityLog } from "./components/ActivityLog";
-import { AgentConfigForm, RunControls } from "./components/ChannelForm";
+import { AgentConfigForm } from "./components/AgentConfigForm";
 import { ConnectionPanel } from "./components/ConnectionPanel";
-import { ResultsDashboard } from "./components/ResultsDashboard";
 import { WorkflowPipeline } from "./components/WorkflowPipeline";
 import { useAgentRun } from "./hooks/useAgentRun";
 import { useServerHealth } from "./hooks/useServerHealth";
@@ -44,33 +41,25 @@ export default function App() {
             settings={settings}
             onChange={updateSetting}
             disabled={agent.running}
-          />
-          <RunControls
             running={agent.running}
             serverOnline={health.status === "online"}
             onStart={startAgent}
             onStop={agent.cancel}
+            onReset={agent.reset}
+            canReset={Boolean(agent.result) || agent.conversationMessages.length > 0}
+            result={agent.result}
+            error={agent.error}
           />
+        </div>
+
+        <div className="side-column">
+          <ConnectionPanel status={health.status} onRefresh={health.check} />
           <WorkflowPipeline
             steps={agent.steps}
             running={agent.running}
             reconnected={agent.reconnected}
             taskPlanSummary={agent.result?.task_plan_summary}
           />
-          <ResultsDashboard result={agent.result} error={agent.error} />
-        </div>
-
-        <div className="side-column">
-          <ConnectionPanel
-            status={health.status}
-            latencyMs={health.latencyMs}
-            apiUrl={health.apiUrl}
-            assistantId={ASSISTANT_ID}
-            threadId={agent.threadId}
-            runId={agent.runId}
-            onRefresh={health.check}
-          />
-          <ActivityLog logs={agent.logs} />
         </div>
       </div>
     </div>
