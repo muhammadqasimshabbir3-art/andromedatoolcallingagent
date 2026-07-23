@@ -18,6 +18,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agent.async_utils import run_in_thread
 from agent.embeddings import embed_documents, embed_query
 
 MAX_PDF_BYTES = 50 * 1024 * 1024
@@ -297,7 +298,8 @@ async def answer_pdf_question(index: PDFDocumentIndex, question: str) -> str:
     """Answer a question using only retrieved PDF context."""
     from agent.graph import get_model
 
-    context = retrieve_context(index, question)
+    # embed_query / Chroma are sync CPU — keep them off the ASGI event loop.
+    context = await run_in_thread(retrieve_context, index, question)
     if not context:
         return "The answer was not found in the uploaded PDF."
 
@@ -331,7 +333,9 @@ async def pdf_analysis_response(
 ) -> AIMessage:
     """Analyze an uploaded PDF and return a graph-compatible AI message."""
     try:
-        index = get_pdf_index(pdf_data_base64, pdf_filename)
+        # PDF parse + first BGE load (sentence_transformers import) is sync/blocking;
+        # LangGraph blockbuster rejects that on the event loop — run in a worker thread.
+        index = await run_in_thread(get_pdf_index, pdf_data_base64, pdf_filename)
         if summarize_only or not question.strip():
             summary = await summarize_pdf(index)
             return AIMessage(

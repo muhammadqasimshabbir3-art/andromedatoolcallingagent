@@ -2,7 +2,7 @@
 
 How **Andromeda / Solar** decides, executes, grounds, cites, and **refuses unsafe DB mutations** — written for operators and engineers who need a production-grade mental model.
 
-Companion to [README.md](./README.md). RAG design note: [prototypeRAG.md](./prototypeRAG.md). Implementation: `src/agent/graph.py`, `src/agent/custom_tools/db_safety_agent.py`, `src/agent/custom_tools/sql_readonly_validator.py`, `src/agent/custom_tools/database_tools.py`, `src/agent/custom_tools/business_rag_tools.py`, `src/agent/embeddings.py`.
+Companion to [README.md](./README.md). RAG design note: [prototypeRAG.md](./prototypeRAG.md). Read-only security: [SecurityReadOnly.md](./SecurityReadOnly.md). Implementation: `src/agent/graph.py`, `src/agent/custom_tools/db_safety_agent.py`, `src/agent/custom_tools/sql_readonly_validator.py`, `src/agent/custom_tools/database_tools.py`, `src/agent/custom_tools/business_rag_tools.py`, `src/agent/embeddings.py`.
 
 ---
 

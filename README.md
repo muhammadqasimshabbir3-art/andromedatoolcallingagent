@@ -565,6 +565,8 @@ list (insert / update / delete / DDL) verified with rules and optional live Groq
 
 ## Security Notes
 
+Full write-up: **[SecurityReadOnly.md](./SecurityReadOnly.md)** — why the agent stays SELECT-only even when `DATABASE_URL` could write.
+
 - Do not commit `.env`, Gmail OAuth client secrets, Gmail token files, app passwords, or Neon credentials.
 - **Defense in depth for Neon:**
   1. Rules keyword/pattern scan → unambiguous SQL hard-block; soft hits inject **RULES SUSPICION BULLETIN** (elevated LLM scrutiny, not auto-block)
