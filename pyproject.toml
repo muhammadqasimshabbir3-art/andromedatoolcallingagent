@@ -28,6 +28,10 @@ dependencies = [
     "ipython>=9.15.0",
     "pypdf>=4.3.0",
     "chromadb>=0.5.0",
+    "psycopg[binary]>=3.2.0",
+    "sentence-transformers>=3.0.0",
+    "torch>=2.2.0",
+    "sqlglot>=25.0.0",
 ]
 
 
@@ -50,6 +54,7 @@ packages = ["langgraph.templates.agent", "agent"]
 
 
 [tool.setuptools.package-data]
+"agent" = ["py.typed", "data/*"]
 "*" = ["py.typed"]
 
 [tool.ruff]
@@ -78,6 +83,10 @@ convention = "google"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+markers = [
+    "integration: tests that call live services (Groq/Neon/etc.)",
+    "langsmith: optional LangSmith-traced integration tests",
+]
 
 [dependency-groups]
 dev = [

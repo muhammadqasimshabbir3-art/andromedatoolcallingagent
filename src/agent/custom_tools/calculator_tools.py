@@ -133,6 +133,30 @@ def evaluate_casio_expression(
     output_format: Literal["rectangular", "polar"] = "rectangular",
 ) -> str:
     """Evaluate a Casio-style scientific calculator expression."""
+    raw = (expression or "").strip()
+    if not raw:
+        return "Calculator error for '': expression is empty."
+
+    lowered = raw.lower()
+    # Reject SQL / column refs that the analytics LLM sometimes passes by mistake.
+    if (
+        re.search(r"\b(select|from|where|join|group\s+by|order\s+by)\b", lowered)
+        or re.search(
+            r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b",
+            raw,
+        )  # table.column (not decimals like 2.5)
+        or re.search(
+            r"\b(line_total|total_amount|unit_price|stock_qty|order_items|products)\b",
+            lowered,
+        )
+    ):
+        return (
+            f"Calculator error for '{expression}': "
+            "pass a pure numeric expression only (e.g. '(15200 - 9800) / 15200 * 100'). "
+            "Do not pass SQL, column names, or table.field references — "
+            "those belong in query_store_database."
+        )
+
     _set_angle_mode(angle_mode)
     normalized = _normalize_expression(expression)
 
@@ -170,7 +194,7 @@ def evaluate_casio_expression(
             f"Angle mode: {angle_mode}\n"
             f"Result: {result}"
         )
-    except (sp.SympifyError, TypeError, ValueError, ZeroDivisionError) as exc:
+    except Exception as exc:  # noqa: BLE001 — never crash the agent graph
         return f"Calculator error for '{expression}': {exc}"
 
 

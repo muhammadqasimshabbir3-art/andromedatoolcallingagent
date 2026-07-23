@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import math
 import re
 import uuid
 from dataclasses import dataclass
@@ -19,11 +18,15 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agent.embeddings import embed_documents, embed_query
+
 MAX_PDF_BYTES = 50 * 1024 * 1024
 CHUNK_SIZE = 1200
 CHUNK_OVERLAP = 200
-EMBEDDING_DIMENSIONS = 384
 TOP_K = 6
+# Re-export for callers that historically imported dims from this module.
+EMBEDDING_DIMENSIONS = 384
+
 
 
 class PDFAnalysisError(ValueError):
@@ -181,22 +184,6 @@ def split_text_into_chunks(
     return chunks
 
 
-def _hash_embedding(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[float]:
-    """Create a deterministic local embedding suitable for private RAG search."""
-    vector = [0.0] * dimensions
-    tokens = re.findall(r"[A-Za-z0-9_]+", text.lower())
-    for token in tokens:
-        digest = hashlib.sha256(token.encode("utf-8")).digest()
-        index = int.from_bytes(digest[:4], "big") % dimensions
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        vector[index] += sign
-
-    magnitude = math.sqrt(sum(value * value for value in vector))
-    if magnitude == 0:
-        return vector
-    return [value / magnitude for value in vector]
-
-
 def _build_chroma_index(fingerprint: str, filename: str, text: str) -> PDFDocumentIndex:
     """Create an in-memory Chroma collection for an extracted PDF."""
     _, chromadb, Settings = _require_pdf_dependencies()
@@ -217,7 +204,7 @@ def _build_chroma_index(fingerprint: str, filename: str, text: str) -> PDFDocume
     collection.add(
         ids=[chunk.chunk_id for chunk in chunks],
         documents=[chunk.text for chunk in chunks],
-        embeddings=[_hash_embedding(chunk.text) for chunk in chunks],
+        embeddings=embed_documents([chunk.text for chunk in chunks]),
         metadatas=[
             {
                 "filename": filename,
@@ -261,7 +248,7 @@ def get_pdf_index(pdf_data_base64: str, filename: str = "uploaded.pdf") -> PDFDo
 def retrieve_context(index: PDFDocumentIndex, query: str, top_k: int = TOP_K) -> str:
     """Retrieve relevant PDF chunks from Chroma for a user question."""
     results = index.collection.query(
-        query_embeddings=[_hash_embedding(query)],
+        query_embeddings=[embed_query(query)],
         n_results=min(top_k, len(index.chunks)),
         include=["documents", "metadatas", "distances"],
     )

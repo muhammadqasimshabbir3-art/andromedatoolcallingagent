@@ -12,7 +12,12 @@ from agent.routing import (
 
 def test_simple_math_detection():
     assert is_math_query("what is 2+2")
+    assert is_math_query("sin(30)")
     assert not is_math_query("what is your name")
+    # "analysis" must NOT match the substring "sin"
+    assert not is_math_query(
+        "could you analysis the profit for me for this month"
+    )
 
 
 def test_batch_math_detection():

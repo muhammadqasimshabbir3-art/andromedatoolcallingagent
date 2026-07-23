@@ -80,25 +80,26 @@ def is_math_query(text: str) -> bool:
     if wants_location(text):
         return False
 
+    # Business analytics belongs to the store DB path, not the Casio calculator.
+    from agent.custom_tools.database_tools import needs_store_database
+
+    if needs_store_database(text):
+        return False
+
     lowered = text.lower()
     expressions = extract_math_expressions(text)
     if expressions:
         return True
 
-    math_words = (
-        "calculate",
-        "evaluate",
-        "factorial",
-        "sqrt",
-        "log(",
-        "ln(",
-        "sin",
-        "cos",
-        "tan",
-        "iota",
-        "complex",
-    )
-    if any(word in lowered for word in math_words):
+    # Prefer whole-word matches so "analysis" does not match "sin".
+    if re.search(
+        r"(?i)\b(calculate|evaluate|factorial|sqrt|complex|iota)\b",
+        text,
+    ):
+        return True
+    if re.search(r"(?i)\b(sin|cos|tan|log|ln)\s*\(", text):
+        return True
+    if re.search(r"(?i)\b(sin|cos|tan|log|ln)\b", text):
         return True
     if re.search(r"(?i)\bsolve\b", text) and re.search(r"[0-9a-z]\s*=", text):
         return True
@@ -163,6 +164,14 @@ def pick_tool_choice(user_text: str) -> dict[str, object] | None:
     """Pick a forced tool when intent is clear."""
     if wants_location(user_text):
         return {"type": "function", "function": {"name": "get_live_location"}}
+
+    from agent.custom_tools.database_tools import needs_store_database
+
+    if needs_store_database(user_text):
+        return {
+            "type": "function",
+            "function": {"name": "query_store_database"},
+        }
 
     if is_math_query(user_text):
         tool_name = (

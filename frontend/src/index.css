@@ -368,6 +368,15 @@ select:focus {
   margin: 0;
 }
 
+.answer-warning {
+  border-color: rgba(180, 83, 9, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.answer-warning strong {
+  color: #b45309;
+}
+
 .pdf-upload-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr);

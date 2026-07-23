@@ -41,3 +41,20 @@ def test_factorial():
 def test_invalid_expression():
     result = evaluate_casio_expression("log(0)")
     assert "Calculator error" in result
+
+
+def test_rejects_sql_column_refs():
+    result = evaluate_casio_expression("order_items.line_total")
+    assert "Calculator error" in result
+    assert "pure numeric" in result
+
+
+def test_rejects_bare_column_name():
+    result = evaluate_casio_expression("line_total * 2")
+    assert "Calculator error" in result
+
+
+def test_decimals_still_work():
+    result = evaluate_casio_expression("(15200.5 - 9800) / 15200.5 * 100")
+    assert "Result:" in result
+    assert "Calculator error" not in result

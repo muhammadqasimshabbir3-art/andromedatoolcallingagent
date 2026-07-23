@@ -167,6 +167,10 @@ reports/
 .ruff_cache/
 Andromeda.egg-info/
 
+# Local neural embedding weights (download via scripts/download_embedding_model.py)
+models/*
+!models/README.md
+
 # Gmail OAuth credentials (never commit)
 client_secret.json
 gmail_token.json

@@ -20,6 +20,9 @@ export interface StepState {
 export interface AgentState {
   task_plan_summary?: string;
   agent_route?: string;
+  db_guard_blocked?: boolean;
+  db_guard_detail?: string;
+  db_guard_layer?: string;
   messages?: Array<{
     content?: unknown;
     type?: string;

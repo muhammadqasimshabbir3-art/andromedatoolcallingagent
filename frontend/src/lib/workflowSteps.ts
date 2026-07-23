@@ -27,7 +27,7 @@ export const WORKFLOW_STEPS: WorkflowStep[] = [
     id: "tools",
     nodes: ["tools"],
     label: "🔧 Tool Execution",
-    description: "Execute tools chosen by the LLM (PDF, Fallback Math, etc.)",
+    description: "Execute tools chosen by the LLM (store SQL, PDF, math, etc.)",
     optional: true,
     emoji: "🔧",
   },
@@ -62,6 +62,47 @@ export const WORKFLOW_STEPS: WorkflowStep[] = [
     description: "Reverse geocode coordinates and search nearby places",
     optional: true,
     emoji: "📍",
+  },
+  {
+    id: "run_pdf_analysis",
+    nodes: ["run_pdf_analysis"],
+    label: "📄 PDF Analysis",
+    description: "Retrieve uploaded PDF chunks with BGE semantic search, then answer",
+    optional: true,
+    emoji: "📄",
+  },
+  {
+    id: "run_business_rag",
+    nodes: ["run_business_rag"],
+    label: "📚 Business RAG",
+    description:
+      "Hybrid retrieve top 5 → trust-layer reads each → answer + list all 5 Sources",
+    optional: true,
+    emoji: "📚",
+  },
+  {
+    id: "reject_db_mutation",
+    nodes: ["reject_db_mutation"],
+    label: "🛡️ Read-Only Guard",
+    description: "Rules + AI intent: block real DB writes, allow legit read/advice asks",
+    optional: true,
+    emoji: "🛡️",
+  },
+  {
+    id: "run_store_database",
+    nodes: ["run_store_database"],
+    label: "🗄️ Store Database",
+    description: "Prepare query_store_database tool call from LLM SQL",
+    optional: true,
+    emoji: "🗄️",
+  },
+  {
+    id: "run_gmail_inbox",
+    nodes: ["run_gmail_inbox"],
+    label: "📬 Gmail Inbox",
+    description: "Read unread Gmail, summarize threads, prepare replies",
+    optional: true,
+    emoji: "📬",
   },
   {
     id: "run_email",
@@ -125,6 +166,19 @@ export function detailForNode(nodeName: string, payload: Record<string, unknown>
       return "File search completed.";
     case "run_location":
       return "Location lookup completed.";
+    case "run_pdf_analysis":
+      return "PDF chunks retrieved with BGE and answered from the document.";
+    case "run_business_rag":
+      return "Top 5 retrieved, each source judged, answer grounded with all Sources listed.";
+    case "reject_db_mutation":
+      return (
+        (typeof payload.db_guard_detail === "string" && payload.db_guard_detail) ||
+        "Blocked write request — rules + AI read-only guard."
+      );
+    case "run_store_database":
+      return "Store database query completed.";
+    case "run_gmail_inbox":
+      return "Gmail inbox read / reply flow completed.";
     case "run_email":
       return "Email sent successfully.";
     case "math_and_email":

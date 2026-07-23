@@ -93,6 +93,11 @@ export function AgentConfigForm({
 }: AgentConfigFormProps) {
   const answer = extractAnswer(result);
   const generatedPdf = generatedPdfFromResult(result);
+  const isReadOnlyBlock =
+    result?.agent_route === "reject_db_mutation" ||
+    answer.includes("Database write blocked") ||
+    answer.includes("Database mutation blocked") ||
+    answer.includes("read-only access only");
 
   const readPdfFile = (file: File) => {
     if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
@@ -207,8 +212,11 @@ export function AgentConfigForm({
       )}
 
       {!error && answer && (
-        <div className="answer-box">
-          <strong>Answer</strong>
+        <div
+          className={`answer-box${isReadOnlyBlock ? " answer-warning" : ""}`}
+          role={isReadOnlyBlock ? "alert" : undefined}
+        >
+          <strong>{isReadOnlyBlock ? "Not allowed — read-only" : "Answer"}</strong>
           <div className="answer-body">{answer}</div>
         </div>
       )}

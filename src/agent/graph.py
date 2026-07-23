@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Annotated, Any, Literal, NotRequired
 
 from dotenv import load_dotenv
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_groq import ChatGroq
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
@@ -14,9 +21,36 @@ from langgraph.prebuilt import ToolNode
 from typing_extensions import TypedDict
 
 from agent.async_utils import run_in_thread
+from agent.custom_tools.business_rag_tools import (
+    answer_business_rag_sync,
+    business_knowledge_rag,
+    needs_business_rag,
+)
 from agent.custom_tools.calculator_tools import (
     casio_calculator,
     solve_math_batch_tool,
+)
+from agent.custom_tools.db_audit_log import log_db_security_event
+from agent.custom_tools.db_safety_agent import (
+    DbSafetyVerdict,
+    db_guard_pass_summary,
+    db_mutation_block_message,
+    evaluate_read_only_guard,
+    generate_readonly_guard_joke,
+    is_db_mutation_request,
+    needs_ai_db_intent_check,
+    needs_semantic_db_intent_check,
+)
+from agent.custom_tools.database_tools import (
+    SQL_GENERATOR_SYSTEM,
+    ensure_store_sources_footer,
+    extract_sql_from_text,
+    load_store_schema,
+    needs_store_analytics,
+    needs_store_database,
+    parse_store_query_tool_result,
+    query_store_database,
+    refresh_store_schema,
 )
 from agent.custom_tools.gmail_inbox_tools import (
     process_gmail_inbox,
@@ -55,10 +89,63 @@ SYSTEM_PROMPT = (
     "when the user refers to earlier results (e.g. 'email that', 'explain that', 'what did I ask'). "
     "For math, use calculator tools. For PDFs use generate_pdf_report. "
     "For location and nearby-place requests, use the live location tools. "
+    "For store / inventory / product / customer / order / sales totals questions: "
+    "the database is PERMANENTLY READ-ONLY. YOU may only decide a single SELECT / "
+    "WITH … SELECT, then MUST call query_store_database. Never invent tool results. "
+    "Never claim data was inserted, updated, or deleted. If the tool returns "
+    "success=false, explain the error — do not pretend a write succeeded. "
+    "After the tool returns, answer only from that JSON/table. "
+    "For business knowledge (policies, warranty, FAQ, SOP, shipping rules, product care): "
+    "use business_knowledge_rag — retrieve semi-structured docs then answer from that context. "
+    "Store schema (from solar_store_schema.sql):\n"
+    "{store_schema}\n"
     "Use Gmail API tools only (no SMTP). "
     "You can read unread Gmail emails, summarize contents, and reply in-thread. "
     "File search and web search run through dedicated graph nodes when detected."
 )
+
+STORE_FORCE_PROMPT = (
+    "This is a Solar Store READ-ONLY database question. "
+    "You are the SQL QUERY WRITER: emit ONLY a single SELECT / WITH … SELECT. "
+    f"{SQL_GENERATOR_SYSTEM}"
+    "The schema in solar_store_schema.sql was just refreshed from Neon. "
+    "Call query_store_database with that read SQL. "
+    "Do not answer with product names until the tool runs. "
+    "Never fabricate rows. Never claim a mutation succeeded."
+)
+
+STORE_ANALYTICS_PROMPT = (
+    "This is a Solar Store BUSINESS ANALYTICS question (profit, revenue, stats, KPIs). "
+    "The database is permanently read-only.\n"
+    "Workflow you MUST follow:\n"
+    "1) Call query_store_database with SELECT(s) that pull the relevant facts from Neon "
+    "(orders, order_items, products cost/price, stores, customers) for the period asked "
+    "(e.g. this month). Prefer aggregations: SUM, COUNT, AVG, GROUP BY store/category.\n"
+    "2) After rows return, if you need ratios, margins, growth %, or totals of totals, "
+    "call casio_calculator with ONLY a pure numeric expression using digits from the "
+    "query result (example: '(15200-9800)/15200*100'). "
+    "NEVER pass SQL, column names, or table.field (e.g. order_items.line_total) "
+    "to casio_calculator.\n"
+    "3) Final answer: explain insights for decision-making using ONLY tool results. "
+    "Do not invent numbers. Do NOT write a Sources section — it is appended automatically. "
+    "If a tool fails, explain the failure — never claim data was changed."
+)
+
+STORE_GROUNDING_PROMPT = (
+    "CRITICAL GROUNDING RULE: Your previous query_store_database tool result is the "
+    "ONLY source of truth (structured JSON with success/rows/row_count or error). "
+    "If success is false, explain the error and do NOT invent rows or claim a write. "
+    "List ONLY values that appear in that tool result. "
+    "Do not add products, customers, or numbers that are not in the tool output. "
+    "If asked for 'low stock', use the stock_qty values from the rows returned. "
+    "For profit/analytics, you may use casio_calculator on numbers that already "
+    "appeared in the tool output. "
+    "Never claim INSERT/UPDATE/DELETE succeeded — this agent cannot mutate data. "
+    "Do NOT write a Sources section yourself — sources are appended automatically."
+)
+
+# Cap tool↔model ping-pong for one user turn (schema fetch + retries used to explode).
+MAX_TOOL_ROUNDS_PER_TURN = 2
 
 GRAPH_RUN_CONFIG = {"recursion_limit": 100}
 
@@ -71,7 +158,10 @@ AgentRoute = Literal[
     "run_web_search",
     "run_file_search",
     "run_location",
+    "run_store_database",
+    "run_business_rag",
     "run_pdf_analysis",
+    "reject_db_mutation",
     "call_model",
 ]
 
@@ -91,9 +181,13 @@ class State(TypedDict):
     pdf_summarize_only: NotRequired[bool]
     generated_pdf_path: NotRequired[str]
     generated_pdf_filename: NotRequired[str]
+    db_guard_blocked: NotRequired[bool]
+    db_guard_detail: NotRequired[str]
+    db_guard_layer: NotRequired[str]
 
 
 _model_instance = None
+_creative_model_instance = None
 
 
 def _init_model():
@@ -113,12 +207,31 @@ def _init_model():
     return _model_instance
 
 
+def _init_creative_model():
+    """Higher-temperature Groq model so refusal jokes change every time."""
+    global _creative_model_instance
+    if _creative_model_instance is not None:
+        return _creative_model_instance
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY environment variable not set")
+
+    _creative_model_instance = ChatGroq(
+        model="llama-3.1-8b-instant",
+        temperature=0.95,
+        api_key=api_key,
+    )
+    return _creative_model_instance
+
+
 def get_model():
     """Return the shared chat model instance."""
     return _init_model()
 
 
 # Tools used only by call_model → tools loop.
+# Store schema is in SYSTEM_PROMPT — only query_store_database is bound (fewer hops).
 llm_tools = [
     casio_calculator,
     solve_math_batch_tool,
@@ -128,9 +241,86 @@ llm_tools = [
     read_unread_gmail,
     reply_to_gmail_message,
     process_gmail_inbox,
+    query_store_database,
+    business_knowledge_rag,
 ]
 
 tool_node = ToolNode(llm_tools)
+
+
+def _messages_since_last_human(messages: list[AnyMessage]) -> list[AnyMessage]:
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if isinstance(message, HumanMessage) or getattr(message, "type", None) == "human":
+            return messages[index + 1 :]
+    return list(messages)
+
+
+def _tool_rounds_this_turn(messages: list[AnyMessage]) -> int:
+    """Count AI messages that requested tools since the latest human message."""
+    return sum(
+        1
+        for message in _messages_since_last_human(messages)
+        if isinstance(message, AIMessage) and getattr(message, "tool_calls", None)
+    )
+
+
+def _latest_store_query_tool_content(messages: list[AnyMessage]) -> str | None:
+    """Return the latest successful query_store_database tool payload, if any."""
+    for message in reversed(_messages_since_last_human(messages)):
+        if not isinstance(message, ToolMessage):
+            continue
+        if (getattr(message, "name", "") or "") != "query_store_database":
+            continue
+        content = str(message.content)
+        parsed = parse_store_query_tool_result(content)
+        if parsed.get("success") is False:
+            return None
+        failed = (
+            content.startswith("Database query error:")
+            or "Query rejected:" in content
+            or "Only SELECT statements are allowed" in content
+            or "Connection failed:" in content
+        )
+        if failed:
+            return None
+        return content
+    return None
+
+
+def _has_successful_store_query(messages: list[AnyMessage]) -> bool:
+    return _latest_store_query_tool_content(messages) is not None
+
+
+def _has_calculator_tool_result(messages: list[AnyMessage]) -> bool:
+    for message in reversed(_messages_since_last_human(messages)):
+        if not isinstance(message, ToolMessage):
+            continue
+        name = (getattr(message, "name", "") or "")
+        if name in {"casio_calculator", "solve_math_batch_tool"}:
+            content = str(message.content)
+            if content and "Calculator error" not in content:
+                return True
+    return False
+
+
+def _should_force_final_answer(
+    messages: list[AnyMessage],
+    *,
+    user_text: str = "",
+) -> bool:
+    """Stop tool ping-pong after enough evidence (or too many tool rounds)."""
+    if _tool_rounds_this_turn(messages) >= MAX_TOOL_ROUNDS_PER_TURN:
+        return True
+    if needs_store_analytics(user_text):
+        # Analytics: allow SQL then optional calculator before forcing prose.
+        if not _has_successful_store_query(messages):
+            return False
+        if _has_calculator_tool_result(messages):
+            return True
+        # One free hop after SQL for casio_calculator; force after that.
+        return _tool_rounds_this_turn(messages) >= 2
+    return _has_successful_store_query(messages)
 
 
 def _is_fresh_user_turn(messages: list[AnyMessage]) -> bool:
@@ -170,6 +360,9 @@ def _pick_route(
     if not _is_fresh_user_turn(messages):
         return "call_model"
 
+    # Read-Only Guard final decision lives in decision_agent (rules + AI).
+    # Keep _pick_route free of LLM so unit tests stay sync/fast.
+
     # Prioritize Gmail inbox auto-reply intent before generic workflow planning.
     if wants_gmail_inbox_reply(user_text):
         return "run_gmail_inbox"
@@ -180,6 +373,14 @@ def _pick_route(
 
     if needs_location(user_text):
         return "run_location"
+
+    # Knowledge / policy questions → retrieve semi-structured docs + RAG.
+    if needs_business_rag(user_text):
+        return "run_business_rag"
+
+    # Store Q&A: LLM decides SQL and must call query_store_database (tools node).
+    if needs_store_database(user_text):
+        return "call_model"
 
     if is_math_query(user_text) and wants_email(user_text):
         return "math_and_email"
@@ -213,19 +414,107 @@ async def decision_agent(state: State) -> dict[str, Any]:
     user_text = get_latest_user_text(messages)
     web_search_enabled = bool(state.get("web_search_enabled", False))
     task_plan = plan_tasks(user_text, web_search_enabled)
-    if state.get("pdf_data_base64"):
+
+    guard_verdict: DbSafetyVerdict | None = None
+    # Semantic READ/WRITE guard before any SQL path (defense in depth).
+    if _is_fresh_user_turn(messages) and needs_semantic_db_intent_check(user_text):
+        guard_verdict = await run_in_thread(
+            evaluate_read_only_guard,
+            user_text,
+            _plain_llm_invoke,
+        )
+        log_db_security_event(
+            event="intent_classification",
+            user_prompt=user_text,
+            intent=guard_verdict.intent,
+            confidence=guard_verdict.confidence,
+            layer=guard_verdict.layer,
+            blocked=guard_verdict.blocked,
+            extra={"reason": guard_verdict.reason, "mutation": guard_verdict.mutation_kind},
+        )
+
+    if guard_verdict is not None and guard_verdict.blocked:
+        route: AgentRoute = "reject_db_mutation"
+    elif state.get("pdf_data_base64"):
         route = "run_pdf_analysis"
     else:
         route = _pick_route(user_text, messages, web_search_enabled)
 
-    if task_plan.use_web_search or task_plan.use_file_search or task_plan.tasks:
+    if route == "reject_db_mutation" and guard_verdict is not None:
+        summary = db_guard_pass_summary(guard_verdict)
+    elif guard_verdict is not None and not guard_verdict.blocked:
+        # Allowed after AI review — continue with normal route summary.
+        if needs_business_rag(user_text):
+            summary = (
+                f"{db_guard_pass_summary(guard_verdict)} → "
+                "Business RAG trust layer"
+            )
+        elif needs_store_database(user_text):
+            summary = (
+                f"{db_guard_pass_summary(guard_verdict)} → "
+                "LLM → query_store_database"
+            )
+        elif task_plan.use_web_search or task_plan.use_file_search or task_plan.tasks:
+            summary = f"{db_guard_pass_summary(guard_verdict)} → {task_plan.summary()}"
+        else:
+            summary = db_guard_pass_summary(guard_verdict)
+    elif task_plan.use_web_search or task_plan.use_file_search or task_plan.tasks:
         summary = task_plan.summary()
+    elif needs_business_rag(user_text):
+        summary = "Business RAG trust layer: retrieve → analyze sources → answer"
+    elif needs_store_database(user_text):
+        if needs_store_analytics(user_text):
+            summary = (
+                "Business analytics: Neon SQL → optional calculator → insights"
+            )
+        else:
+            summary = "LLM → query_store_database tool → answer"
     else:
         summary = "General conversation"
 
-    return {
+    payload: dict[str, Any] = {
         "task_plan_summary": summary,
         "agent_route": route,
+    }
+    if guard_verdict is not None:
+        payload["db_guard_blocked"] = guard_verdict.blocked
+        payload["db_guard_layer"] = guard_verdict.layer
+        payload["db_guard_detail"] = db_guard_pass_summary(guard_verdict)
+    return payload
+
+
+async def reject_db_mutation(state: State) -> dict[str, Any]:
+    """Refuse write intents — never invoke SQL generation or the SQL tool."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    verdict = await run_in_thread(
+        evaluate_read_only_guard,
+        user_text,
+        _plain_llm_invoke,
+    )
+    joke = await run_in_thread(
+        generate_readonly_guard_joke,
+        user_text,
+        _creative_llm_invoke,
+    )
+    content = db_mutation_block_message(user_text, verdict, joke=joke)
+    log_db_security_event(
+        event="final_response",
+        user_prompt=user_text,
+        intent=verdict.intent,
+        confidence=verdict.confidence,
+        layer=verdict.layer,
+        blocked=True,
+        generated_sql="",
+        final_response=content,
+    )
+    return {
+        "messages": [AIMessage(content=content)],
+        "agent_route": "reject_db_mutation",
+        "db_guard_blocked": True,
+        "db_guard_layer": verdict.layer,
+        "db_guard_detail": db_guard_pass_summary(verdict),
+        "task_plan_summary": db_guard_pass_summary(verdict),
     }
 
 
@@ -319,6 +608,143 @@ async def run_location(state: State) -> dict[str, Any]:
     return {"messages": [response]}
 
 
+def _plain_llm_invoke(messages: list[dict[str, str]]) -> str:
+    """Invoke Groq without tools; return text content."""
+    lc_messages: list[AnyMessage] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if role == "system":
+            lc_messages.append(SystemMessage(content=content))
+        else:
+            lc_messages.append(HumanMessage(content=content))
+    response = get_model().invoke(lc_messages)
+    content = getattr(response, "content", response)
+    return content if isinstance(content, str) else str(content)
+
+
+def _creative_llm_invoke(messages: list[dict[str, str]]) -> str:
+    """Invoke a high-temperature Groq model (for fresh jokes each time)."""
+    lc_messages: list[AnyMessage] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if role == "system":
+            lc_messages.append(SystemMessage(content=content))
+        else:
+            lc_messages.append(HumanMessage(content=content))
+    response = _init_creative_model().invoke(lc_messages)
+    content = getattr(response, "content", response)
+    return content if isinstance(content, str) else str(content)
+
+
+def _synthesize_store_tool_call(user_text: str) -> AIMessage:
+    """Ask the LLM for SQL (no tools), then wrap it as a real tool_call.
+
+    Groq often fails when tool_choice is forced. This still uses the official
+    query_store_database tool via the LangGraph tools node — the LLM decides
+    the SQL; the tool executes it. Write intents must never reach this helper.
+    """
+    # Belt: refuse writes even if routing slipped.
+    from agent.custom_tools.db_safety_agent import classify_db_access_intent
+
+    rules = classify_db_access_intent(user_text)
+    if rules.blocked:
+        return AIMessage(content=db_mutation_block_message(user_text, rules))
+
+    schema = refresh_store_schema()
+    sql_prompt = (
+        f"{SQL_GENERATOR_SYSTEM}\n"
+        f"{schema}\n\n"
+        "Return ONLY one read-only SELECT or WITH ... SELECT. "
+        "No markdown, no explanation, no comments. "
+        "If the user asks to change data, reply with REFUSE_WRITE only. "
+        "For low stock, ORDER BY stock_qty ASC. Prefer LIMIT 10."
+    )
+    try:
+        sql_raw = _plain_llm_invoke(
+            [
+                {"role": "system", "content": sql_prompt},
+                {"role": "user", "content": user_text},
+            ]
+        )
+        if "REFUSE_WRITE" in str(sql_raw).upper() and "SELECT" not in str(sql_raw).upper():
+            return AIMessage(
+                content=(
+                    "This database is permanently read-only. I cannot change stored data.\n"
+                    "Ask a read question instead (for example: which products are low in stock?)."
+                )
+            )
+        sql = extract_sql_from_text(sql_raw)
+        log_db_security_event(
+            event="sql_generated",
+            user_prompt=user_text,
+            intent="read",
+            generated_sql=sql,
+        )
+    except Exception as exc:  # noqa: BLE001 — never crash the graph on bad SQL
+        log_db_security_event(
+            event="sql_generated",
+            user_prompt=user_text,
+            generated_sql="",
+            tool_success=False,
+            tool_error=str(exc),
+        )
+        return AIMessage(
+            content=(
+                "I could not build a safe read-only SQL query for that request.\n"
+                f"Details: {exc}\n\n"
+                "If you need return / replace / refund / warranty guidance, ask as a "
+                "policy question (for example: “what is our return and refund policy?”). "
+                "For live stock or orders, ask a data question (for example: "
+                "“which products are low in stock?”)."
+            )
+        )
+    return AIMessage(
+        content="Calling tools: query_store_database",
+        tool_calls=[
+            {
+                "name": "query_store_database",
+                "args": {"sql": sql},
+                "id": f"store_{uuid.uuid4().hex[:12]}",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+
+async def run_store_database(state: State) -> dict[str, Any]:
+    """Legacy node: emit a tool call so query_store_database still runs."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    try:
+        response = await run_in_thread(_synthesize_store_tool_call, user_text)
+    except Exception as exc:  # noqa: BLE001
+        response = AIMessage(
+            content=f"I could not prepare a store database tool call.\nError: {exc}"
+        )
+    return {"messages": [response]}
+
+
+async def run_business_rag(state: State) -> dict[str, Any]:
+    """Retrieve semi-structured business docs from Neon, then RAG-answer."""
+    messages, _ = _prepare_messages(state)
+    user_text = get_latest_user_text(messages)
+    try:
+        answer = await run_in_thread(
+            answer_business_rag_sync,
+            user_text,
+            _plain_llm_invoke,
+        )
+    except Exception as exc:  # noqa: BLE001
+        answer = (
+            "I could not run business knowledge RAG.\n"
+            f"Error: {exc}\n"
+            "Tip: seed docs with `python scripts/seed_business_rag.py`."
+        )
+    return {"messages": [AIMessage(content=answer)]}
+
+
 async def run_pdf_analysis(state: State) -> dict[str, Any]:
     """Analyze the uploaded PDF, then answer PDF-grounded questions."""
     messages, _ = _prepare_messages(state)
@@ -339,15 +765,79 @@ async def call_model(state: State) -> dict[str, Any]:
     has_system_message = any(
         getattr(message, "type", None) == "system" for message in messages
     )
-    llm_messages = (
-        [SystemMessage(content=SYSTEM_PROMPT), *messages]
+    user_text_preview = get_latest_user_text(messages)
+    schema_text = (
+        refresh_store_schema()
+        if needs_store_database(user_text_preview)
+        else load_store_schema()
+    )
+    llm_messages: list[AnyMessage] = (
+        [
+            SystemMessage(content=SYSTEM_PROMPT.format(store_schema=schema_text)),
+            *messages,
+        ]
         if not has_system_message
-        else messages
+        else list(messages)
     )
 
     user_text = get_latest_user_text(llm_messages)
-    model_with_tools = get_model().bind_tools(llm_tools)
-    response = await model_with_tools.ainvoke(llm_messages)
+    store_question = needs_store_database(user_text)
+    analytics_question = needs_store_analytics(user_text)
+    has_store_rows = _has_successful_store_query(messages)
+    force_final = _should_force_final_answer(messages, user_text=user_text)
+    needs_store_tool = store_question and not has_store_rows and not force_final
+
+    # After enough tool evidence (or too many rounds), produce the final answer.
+    if force_final:
+        if has_store_rows:
+            llm_messages = [*llm_messages, SystemMessage(content=STORE_GROUNDING_PROMPT)]
+        model_with_tools = get_model().bind_tools(llm_tools, tool_choice="none")
+    elif has_store_rows and analytics_question and not _has_calculator_tool_result(messages):
+        # Data is in — allow one calculator pass for margins / ratios / totals.
+        llm_messages = [
+            *llm_messages,
+            SystemMessage(content=STORE_GROUNDING_PROMPT),
+            SystemMessage(
+                content=(
+                    "You already have Neon query rows. If useful for profit/KPI math, "
+                    "call casio_calculator with numbers from those rows only. "
+                    "Otherwise write the final analysis now."
+                )
+            ),
+        ]
+        model_with_tools = get_model().bind_tools([casio_calculator])
+    elif needs_store_tool:
+        # Do NOT force tool_choice (Groq crashes). Analytics may also use calculator later.
+        if analytics_question:
+            llm_messages = [*llm_messages, SystemMessage(content=STORE_ANALYTICS_PROMPT)]
+            model_with_tools = get_model().bind_tools(
+                [query_store_database, casio_calculator]
+            )
+        else:
+            llm_messages = [*llm_messages, SystemMessage(content=STORE_FORCE_PROMPT)]
+            model_with_tools = get_model().bind_tools([query_store_database])
+    else:
+        model_with_tools = get_model().bind_tools(llm_tools)
+
+    response: AIMessage | Any
+    try:
+        response = await model_with_tools.ainvoke(llm_messages)
+    except Exception:  # noqa: BLE001 — Groq invalid function-call payloads
+        if needs_store_tool:
+            # LLM still decides SQL; we wrap it as a real tool_call for ToolNode.
+            response = await run_in_thread(_synthesize_store_tool_call, user_text)
+        else:
+            response = AIMessage(
+                content="I hit a model error while answering. Please try again."
+            )
+
+    if (
+        isinstance(response, AIMessage)
+        and needs_store_tool
+        and not response.tool_calls
+    ):
+        # Model answered in prose instead of calling the tool — still force the tool path.
+        response = await run_in_thread(_synthesize_store_tool_call, user_text)
 
     if (
         isinstance(response, AIMessage)
@@ -365,6 +855,18 @@ async def call_model(state: State) -> dict[str, Any]:
             response.content = f"Calling tools: {tool_names}"
         else:
             response.content = "I could not generate a response. Please try again."
+
+    # Always attach database Sources for final store answers (SQL path).
+    if (
+        isinstance(response, AIMessage)
+        and not response.tool_calls
+        and not is_empty_ai_message(response)
+    ):
+        tool_content = _latest_store_query_tool_content(messages)
+        if tool_content:
+            response.content = ensure_store_sources_footer(
+                str(response.content), tool_content
+            )
 
     return {"messages": [response]}
 
@@ -407,6 +909,9 @@ graph_builder.add_node("math_and_email", math_and_email)
 graph_builder.add_node("run_web_search", run_web_search)
 graph_builder.add_node("run_file_search", run_file_search)
 graph_builder.add_node("run_location", run_location)
+graph_builder.add_node("run_store_database", run_store_database)
+graph_builder.add_node("run_business_rag", run_business_rag)
+graph_builder.add_node("reject_db_mutation", reject_db_mutation)
 graph_builder.add_node("run_pdf_analysis", run_pdf_analysis)
 graph_builder.add_node("call_model", call_model)
 graph_builder.add_node("tools", tool_node)
@@ -425,6 +930,9 @@ graph_builder.add_conditional_edges(
         "run_web_search": "run_web_search",
         "run_file_search": "run_file_search",
         "run_location": "run_location",
+        "run_store_database": "run_store_database",
+        "run_business_rag": "run_business_rag",
+        "reject_db_mutation": "reject_db_mutation",
         "run_pdf_analysis": "run_pdf_analysis",
         "call_model": "call_model",
     },
@@ -437,6 +945,9 @@ graph_builder.add_edge("math_and_email", END)
 graph_builder.add_edge("run_web_search", END)
 graph_builder.add_edge("run_file_search", END)
 graph_builder.add_edge("run_location", END)
+graph_builder.add_conditional_edges("run_store_database", route_after_model)
+graph_builder.add_edge("run_business_rag", END)
+graph_builder.add_edge("reject_db_mutation", END)
 graph_builder.add_edge("run_pdf_analysis", END)
 graph_builder.add_conditional_edges("call_model", route_after_model)
 graph_builder.add_edge("tools", "call_model")

@@ -25,7 +25,7 @@ export function AgentHeader({ serverStatus, latencyMs, apiUrl, running }: AgentH
         </div>
         <div>
           <h1>Andromeda</h1>
-          <p>Multi-tool LangGraph assistant for math, search, PDF, location, and Gmail</p>
+          <p>Multi-tool LangGraph assistant for math, search, PDF, store SQL, business RAG, location, and Gmail</p>
         </div>
       </div>
 
